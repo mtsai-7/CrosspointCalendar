@@ -20,9 +20,11 @@
 #include <WiFi.h>
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
+#include <esp_sleep.h>
 
 #include <cstring>
 
+#include "CalendarSleep.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
@@ -258,6 +260,12 @@ static bool loadSleepFrameBuffer() {
   return true;
 }
 
+// The calendar sleep screen needs a timer wakeup to redraw on schedule.
+static uint64_t calendarWakeSeconds() {
+  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR) return 0;
+  return CalendarSleep::secondsUntilNextRedraw();
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -297,7 +305,7 @@ void enterDeepSleep(bool fromTimeout = false) {
   Storage.prepareForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
-  powerManager.startDeepSleep(gpio);
+  powerManager.startDeepSleep(gpio, calendarWakeSeconds());
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -455,7 +463,7 @@ void setup() {
       if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
-        powerManager.startDeepSleep(gpio);
+        powerManager.startDeepSleep(gpio, calendarWakeSeconds());
       }
       wakePowerReleasePending = true;
       break;
@@ -472,7 +480,7 @@ void setup() {
       break;
 #else
       Storage.prepareForDeepSleep();
-      powerManager.startDeepSleep(gpio);
+      powerManager.startDeepSleep(gpio, calendarWakeSeconds());
       break;
 #endif
     case HalGPIO::WakeupReason::AfterFlash:
@@ -480,6 +488,21 @@ void setup() {
     case HalGPIO::WakeupReason::Other:
     default:
       break;
+  }
+
+  // Calendar timer wake (getWakeupReason() reports it as Other): redraw the
+  // sleep screen and go straight back to sleep without starting the UI.
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
+    LOG_INF("MAIN", "Timer wake, redrawing calendar sleep screen");
+    setupDisplayAndFonts(true);
+    if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR) {
+      CalendarSleep::noteTimerWake();
+      CalendarSleep::render(renderer);
+    }
+    halTiltSensor.deepSleep();
+    display.deepSleep();
+    Storage.prepareForDeepSleep();
+    powerManager.startDeepSleep(gpio, calendarWakeSeconds());
   }
 
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);

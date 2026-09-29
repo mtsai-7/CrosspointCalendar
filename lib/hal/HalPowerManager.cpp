@@ -66,7 +66,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // Otherwise, no change needed
 }
 
-void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t timerWakeSeconds) const {
 #ifdef ENABLE_SERIAL_LOG
   // Tear down HWCDC so the host sees a clean disconnect and the peripheral
   // doesn't hold power domains that interfere with USB-powered GPIO wake.
@@ -76,7 +76,10 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 #endif
 
 #if !SOC_PM_SUPPORT_EXT1_WAKEUP
-  if (gpio.isXteinkDevice()) {
+  // Calendar timer sleep keeps the battery latched instead; that is asserted
+  // after powerDownRailsForSleep() below, which would otherwise cut it on X3.
+  const bool keepXteinkBatteryLatched = gpio.isXteinkDevice() && timerWakeSeconds > 0;
+  if (gpio.isXteinkDevice() && !keepXteinkBatteryLatched) {
     // GPIO13 gates the battery MOSFET on both Xteink C3 boards; driving it low
     // is the battery power-off (the SDK wake source still handles USB power).
     // Release any surviving pad hold first: hold_en survives deep sleep via
@@ -112,12 +115,27 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 
   // Cut the gated peripheral rails (touch/SD/EPD on boards like the Sticky) and
   // hold the enables off through deep sleep — otherwise the GT911 and SD card
-  // stay powered all through "off" and drain the battery. No-op on boards with
-  // no switched rails (X4/X3). Trade-off: no touch-to-wake; wake is the power
+  // stay powered all through "off" and drain the battery. No-op on the X4; on
+  // the X3 the SDK profile names GPIO13 as the SD enable, so this drives it LOW.
+  // Trade-off: no touch-to-wake; wake is the power
   // button. Must run after display.deepSleep() so the panel controller gets its
   // deep-sleep command while its rail is still up (enterDeepSleep() in main.cpp
   // guarantees that ordering).
   freeink::PowerManager::powerDownRailsForSleep();
+
+#if !SOC_PM_SUPPORT_EXT1_WAKEUP
+  if (keepXteinkBatteryLatched) {
+    // Keep the battery latched so the chip stays powered and the timer wakeup
+    // can fire. GPIO13 latches the battery on the X3 as well as the X4
+    // (hardware-verified on an X3, 2026-09-29: the timer fired on USB power but
+    // never on battery). Must follow powerDownRailsForSleep(): the SDK's X3
+    // profile lists GPIO13 as the SD-card enable and holds it LOW there.
+    gpio_hold_dis(XTEINK_C3_GPIO13);
+    gpio_set_direction(XTEINK_C3_GPIO13, GPIO_MODE_OUTPUT);
+    gpio_set_level(XTEINK_C3_GPIO13, 1);
+    gpio_hold_en(XTEINK_C3_GPIO13);
+  }
+#endif
 
 #if FREEINK_DEVICE_PAPERMONO
   // Its power button is behind the M5PM1 PMIC rather than an ESP GPIO, so
@@ -127,6 +145,13 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
     delay(1000);  // allow the PMIC firmware time to drop power
   }
 #endif
+
+  if (timerWakeSeconds > 0) {
+    // deepSleepUntilPowerButton() only adds the button wake source, so the
+    // timer armed here stays armed alongside it.
+    LOG_INF("PWR", "Timer wakeup in %llu s", static_cast<unsigned long long>(timerWakeSeconds));
+    esp_sleep_enable_timer_wakeup(timerWakeSeconds * 1000000ULL);
+  }
 
   // Waits for the power button to be physically released (so holding it doesn't
   // immediately wake the device again), then arms the wake source and sleeps.
