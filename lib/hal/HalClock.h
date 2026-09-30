@@ -43,6 +43,13 @@ class HalClock {
   // Returns false if RTC is not available.
   bool formatTime(char* buf, size_t bufSize, bool use12Hour = false) const;
 
+  // Current UTC time read straight from the RTC (bypasses the read cache).
+  // Returns false if the RTC is absent or reports an invalid time.
+  bool utcEpoch(time_t& out) const;
+
+  // Set the RTC to a UTC epoch (e.g. phone time received over BLE).
+  bool setUtcEpoch(time_t epoch);
+
   // Sync the RTC from an NTP server. Requires WiFi to be connected.
   // Blocks for up to ~5s while waiting for SNTP response.
   // Returns true if the RTC was successfully updated.

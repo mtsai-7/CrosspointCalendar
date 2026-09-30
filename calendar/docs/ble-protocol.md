@@ -329,11 +329,11 @@ Bluetooth off/on to force a new address).
 
 | # | Risk | Why it matters | Mitigation / fallback |
 |---|---|---|---|
-| R1 | **Bonded reconnect to a rotating (RPA) phone address.** NimBLE must resolve the phone's RPA to its identity (IRK in the controller resolving list or host-based resolution) to find the LTK. Related reports: [esp-nimble #10](https://github.com/espressif/esp-nimble/issues/10) (client re-dials the ID address — we avoid this by connecting to the scanned address), [NimBLE-Arduino #1187](https://github.com/h2zero/NimBLE-Arduino/issues/1187) (inspecting scan results broke bonded reconnect security). | Every hourly sync depends on it. | Pair with ID-key distribution; enable NimBLE RPA resolution; keep scan-result handling minimal (#1187 workaround: no stored results/callbacks beyond the match). If it cannot be made reliable: **Appendix A** (app-layer encryption, no LE bond needed after setup). |
-| R2 | Android shows a passkey-entry prompt when a **remote central** starts Passkey Entry pairing with the phone as peripheral. | Needed once, at setup. | Fallback: X3 IO capability DisplayYesNo → Numeric Comparison (confirm on both screens). |
+| R1 | **Bonded reconnect to a rotating (RPA) phone address.** NimBLE must resolve the phone's RPA to its identity (IRK in the controller resolving list or host-based resolution) to find the LTK. Related reports: [esp-nimble #10](https://github.com/espressif/esp-nimble/issues/10) (client re-dials the ID address — we avoid this by connecting to the scanned address), [NimBLE-Arduino #1187](https://github.com/h2zero/NimBLE-Arduino/issues/1187) (inspecting scan results broke bonded reconnect security). | Every hourly sync depends on it. | **Retired 2026-09-30** (spike, NimBLE-Arduino 2.5.1 on the X3, Android 16 phone): after the phone rotated its RPA, the X3 resolved it to the bonded identity, reconnected, and read HEADER + payload over the stored bond (~4 s per sync). Needed: ID-key distribution; **host-based privacy on** (`setOwnAddrType(BLE_OWN_ADDR_RPA_PUBLIC_DEFAULT)`) — once a bond holds the IRK, NimBLE rewrites scan results to the identity address, and only with host privacy does `ble_gap_connect()` map it back to the current RPA (otherwise connects time out). See §13 for the other pitfalls. Appendix A no longer needed. |
+| R2 | Android shows a passkey-entry prompt when a **remote central** starts Passkey Entry pairing with the phone as peripheral. | Needed once, at setup. | **Retired 2026-09-30:** Android showed its PIN-entry prompt when the X3 (DisplayOnly) started SC + MITM pairing; the passkey drawn on the X3 bonded both sides. |
 | R3 | `PERMISSION_READ_ENCRYPTED_MITM` on the Android GATT server answers an unbonded read with *Insufficient Authentication* (not silently). | Confidentiality of plan A. | **Retired 2026-09-29:** unpaired read of HEADER from a Windows PC (bleak) against an Android 16 phone was refused with ATT 0x05 *Insufficient Authentication*; advertising seen from an RPA. |
-| R4 | NimBLE heap/flash on ESP32-C3: timer-wake path (no UI loaded) is fine; the pairing screen runs inside the reader UI (~135 KB free, 115 KB largest block). Flash headroom ~930 KB. | OOM in pairing UI; image too big. | Init NimBLE only on those paths and deinit after; measure. |
-| R5 | Firmware currently compiles Bluetooth out: `lib_ignore = BLE` also drops the ESP-IDF `bt` component in the `custom_sdkconfig` core build. | No BLE at all. | Remove the ignore, enable NimBLE in sdkconfig, re-check reader heap. |
+| R4 | NimBLE heap/flash on ESP32-C3: timer-wake path (no UI loaded) is fine; the pairing screen runs inside the reader UI (~135 KB free, 115 KB largest block). Flash headroom ~930 KB. | OOM in pairing UI; image too big. | **Open.** Timer-wake path fine (NimBLE up costs ~47 KB, all returned on deinit). Flash +221 KB (≈700 KB headroom left). But normal reading boots now show ~114 KB free / 61 KB largest block vs 155 KB / 115 KB on stock 1.6.5 — investigate whether the controller-RAM release takes effect. |
+| R5 | Firmware compiled Bluetooth out: `lib_ignore = BLE` also drops the ESP-IDF `bt` component in the `custom_sdkconfig` core build. | No BLE at all. | **Done:** calendar envs clear `lib_ignore`, build the core **controller-only** (`CONFIG_BT_CONTROLLER_ONLY=y`, `CONFIG_BT_NIMBLE_ENABLED=n`, `CONFIG_BLE_MESH=n`) because NimBLE-Arduino brings its own host (§13). |
 | R6 | ASUS/Android background limits kill the service or advertising. | Missed syncs. | Foreground service + battery-optimisation exemption; the app surfaces "last served X3 at HH:MM". |
 
 ## 12. Test vectors
@@ -372,6 +372,34 @@ POSIX TZ expectations for the Android generator (§6):
 | Asia/Kolkata | `STD-5:30` |
 | UTC | `STD0` |
 | Australia/Lord_Howe | `STD-10:30DST-11,M10.1.0,M4.1.0` |
+
+## 13. Implementation notes from the hardware spike (2026-09-30)
+
+X3 firmware: NimBLE-Arduino 2.5.1 on arduino-esp32 3.3 (pioarduino); phone:
+Android 16. Each item below was a real failure seen in the logs.
+
+1. **One NimBLE host only.** Arduino 3.3's C3 core is built with the ESP-IDF
+   NimBLE host (`CONFIG_BT_NIMBLE_ENABLED=y`) and NimBLE-Arduino always compiles
+   its own → duplicate `ble_*` symbols at link. Build the core controller-only
+   (+ `CONFIG_BLE_MESH=n`, which needs a host). With no host in the core,
+   Arduino's `esp32-hal-bt.c` compiles out, so the firmware must define
+   `_bleLibraryInUse` itself and do the boot-time controller-RAM release.
+2. **Stay connected after a new bond.** Android keeps "bonding" open while it
+   runs its own post-bond discovery; a disconnect within ~1 s makes it delete
+   the new bond ("ACL DISCONNECTED during Bonding"). The X3 stays connected
+   10 s after pairing.
+3. **Host privacy is required for reconnects** (R1 above).
+4. **Peer-initiated encryption.** A bonded phone starts encryption itself right
+   after the connection. NimBLE-Arduino 2.5.1's `secureConnection()` then gets
+   `BLE_HS_EALREADY`, counts it as started and waits forever
+   (`BLE_NPL_TIME_FOREVER`) for an event that already fired. The X3 waits up to
+   2 s for `isEncrypted()` and only calls `secureConnection()` if needed.
+5. **Stale bonds.** If the phone lost its keys (it answers encryption by
+   requesting pairing, or reports PIN/key missing), the X3 deletes its bond so
+   the next wake re-pairs; other security errors keep the bond.
+6. **No unbounded waits.** Several NimBLE-Arduino calls block without a
+   timeout, so each X3 run has a watchdog (60 s sync / 90 s pairing) that
+   restarts the chip; the restart completes the wake without BLE.
 
 ## Appendix A — Plan B: app-layer encryption (not in v1 unless R1 fails)
 

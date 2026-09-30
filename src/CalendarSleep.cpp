@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <ctime>
 
+#include "CalendarBle.h"
 #include "fontIds.h"
 
 // Redraw cadence in seconds; must divide 3600. Test builds shorten it (e.g.
@@ -92,6 +93,18 @@ void renderDebugLine(const GfxRenderer& r) {
            static_cast<unsigned long>(timerWakeCount), powerManager.getBatteryPercentage(),
            static_cast<unsigned long long>(secondsUntilNextRedraw()));
   r.drawCenteredText(SMALL_FONT_ID, r.getScreenHeight() - 40, buf);
+
+  // Last BLE run: result, events, payload bytes, chunks read, clock correction,
+  // radio time, and when it ran (local time).
+  const CalendarBle::Status& ble = CalendarBle::last();
+  if (ble.result == CalendarBle::Result::None) return;
+  struct tm at;
+  localtime_r(&ble.at, &at);
+  char line[80];
+  snprintf(line, sizeof(line), "BLE %s e%d %uev %uB c%u d%+lds %ums @%02d:%02d", CalendarBle::resultName(ble.result),
+           ble.error, ble.eventCount, ble.payloadLen, ble.chunksRead, static_cast<long>(ble.clockDelta), ble.durationMs,
+           at.tm_hour, at.tm_min);
+  r.drawCenteredText(SMALL_FONT_ID, r.getScreenHeight() - 20, line);
 }
 #endif
 
@@ -104,6 +117,7 @@ void noteTimerWake() {
 
 void render(GfxRenderer& renderer) {
   sleepRenderCount++;
+  CalendarBle::restoreTimezone();  // phone's rule from the last sync, if any
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   renderer.clearScreen();
   struct tm now;

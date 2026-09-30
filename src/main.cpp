@@ -24,6 +24,7 @@
 
 #include <cstring>
 
+#include "CalendarBle.h"
 #include "CalendarSleep.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -370,6 +371,13 @@ void setup() {
 #endif
 
   HalSystem::begin();
+  // A calendar BLE run that overran its watchdog restarted the chip: finish
+  // that wake without BLE (redraw, back to sleep) instead of booting the UI.
+  const bool bleWatchdogRestart = CalendarBle::consumeWatchdogRestart();
+  const bool calendarWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER || bleWatchdogRestart;
+  // BLE only runs on calendar timer wakes; every other boot gets the
+  // controller's reserved RAM back (early, before the heap fragments).
+  CalendarBle::releaseMemoryUnlessNeeded(calendarWake && !bleWatchdogRestart);
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
   const bool rebootedFromPanic = HalSystem::isRebootFromPanic();
@@ -492,11 +500,14 @@ void setup() {
 
   // Calendar timer wake (getWakeupReason() reports it as Other): redraw the
   // sleep screen and go straight back to sleep without starting the UI.
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
-    LOG_INF("MAIN", "Timer wake, redrawing calendar sleep screen");
+  if (calendarWake) {
+    LOG_INF("MAIN", "%s, redrawing calendar sleep screen", bleWatchdogRestart ? "BLE watchdog restart" : "Timer wake");
     setupDisplayAndFonts(true);
     if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR) {
       CalendarSleep::noteTimerWake();
+      // Boot applied the Settings timezone; the phone's rule (if any) wins.
+      CalendarBle::restoreTimezone();
+      if (!bleWatchdogRestart) CalendarBle::run(renderer);
       CalendarSleep::render(renderer);
     }
     halTiltSensor.deepSleep();
