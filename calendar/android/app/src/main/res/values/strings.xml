@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">X3 Calendar</string>
+    <string name="channel_name">Calendar sync for X3</string>
+
+    <string name="notif_title">Serving calendar to X3</string>
+    <string name="notif_waiting_bluetooth">Waiting for Bluetooth</string>
+    <string name="notif_waiting_x3">Waiting for the X3\'s first sync</string>
+    <string name="notif_synced">Last X3 sync %1$s</string>
+    <string name="notif_synced_battery">Last X3 sync %1$s · X3 battery %2$d%%</string>
+    <string name="notif_error">Problem: %1$s</string>
+
+    <string name="btn_permissions">Grant permissions</string>
+    <string name="btn_start">Start serving</string>
+    <string name="btn_stop">Stop serving</string>
+    <string name="btn_battery">Battery optimisation exemption</string>
+    <string name="btn_bluetooth_settings">Bluetooth settings (pairing)</string>
+
+    <string name="yes">yes</string>
+    <string name="no">no</string>
+    <string name="st_bluetooth_perm">Bluetooth permissions: %1$s</string>
+    <string name="st_calendar_perm">Calendar permission: %1$s</string>
+    <string name="st_battery_exempt">Battery optimisation exempt: %1$s</string>
+    <string name="st_service">Service running: %1$s</string>
+    <string name="st_advertising">Advertising: %1$s</string>
+    <string name="st_timezone">Time zone: %1$s → %2$s</string>
+    <string name="st_agenda">Agenda from %1$s: %2$d events, %3$d bytes</string>
+    <string name="st_last_session">Last X3 session: %1$s</string>
+    <string name="st_x3">X3: battery %1$s, %2$d wakes, firmware %3$s</string>
+</resources>
