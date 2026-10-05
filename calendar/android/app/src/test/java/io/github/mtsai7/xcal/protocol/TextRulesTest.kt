@@ -17,6 +17,15 @@ class TextRulesTest {
             "x\u0000y\u007fz" to "x y z",
             "　Tokyo　" to "Tokyo",
             "tab\u0085nel" to "tab nel",
+            "𝐁𝐨𝐥𝐝 𝓼𝓬𝓻𝓲𝓹𝓽" to "Bold script",
+            "Ｔｅａｍ Ⓐ" to "Team A",
+            "Team 🎉 lunch 🍕" to "Team lunch",
+            "👨‍💻 Dev sync ✅️" to "Dev sync",
+            "🇺🇸 Holiday" to "Holiday",
+            "Café → office" to "Café office",
+            "😀" to "",
+            "ʙᴇᴘ ʀᴇᴠɪᴇᴡ 🚗" to "bep review",
+            "🅐🅑 🅾🅿" to "AB OP",
         )
         for ((raw, want) in cases) assertEquals("sanitize(${raw.map { it.code }})", want, TextRules.sanitize(raw))
     }

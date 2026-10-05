@@ -10,6 +10,7 @@ firmware unit tests must reproduce byte for byte.
 from __future__ import annotations
 
 import struct
+import unicodedata
 import zlib
 from dataclasses import dataclass, field
 
@@ -63,12 +64,42 @@ def crc32(data: bytes) -> int:
 # --- Text rules (phone side) -------------------------------------------------
 
 
+PICTOGRAPH_RANGES = [
+    (0x200D, 0x200D), (0x20E3, 0x20E3), (0xFE00, 0xFE0F), (0xE0020, 0xE007F),
+    (0x2190, 0x21FF), (0x2300, 0x23FF), (0x25A0, 0x27BF), (0x2900, 0x297F),
+    (0x2B00, 0x2BFF), (0x1F000, 0x1FAFF),
+]
+
+
+def is_pictograph(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in PICTOGRAPH_RANGES)
+
+
+# "Fancy text" letters NFKC leaves alone: small capitals -> lowercase.
+SMALL_CAPS = "ᴀa ʙb ᴄc ᴅd ᴇe ꜰf ɢg ʜh ɪi ᴊj ᴋk ʟl ᴍm ɴn ᴏo ᴘp ꞯq ʀr ꜱs ᴛt ᴜu ᴠv ᴡw ʏy ᴢz"
+FOLD = {ord(pair[0]): pair[1] for pair in SMALL_CAPS.split()}
+
+
+def fold_letter(cp: int) -> str | None:
+    """Plain letter for a styled letter NFKC does not decompose, else None."""
+    if cp in FOLD:
+        return FOLD[cp]
+    if 0x1F150 <= cp <= 0x1F169:  # negative circled capitals
+        return chr(ord("A") + cp - 0x1F150)
+    if 0x1F170 <= cp <= 0x1F189:  # negative squared capitals
+        return chr(ord("A") + cp - 0x1F170)
+    return None
+
+
 def sanitize_text(text: str | None) -> str:
-    """Controls -> space, then split on White_Space runs and rejoin with one space."""
+    """NFKC, drop pictographs, controls -> space, split on White_Space runs, rejoin with one space."""
     if not text:
         return ""
     words, cur = [], []
-    for c in text:
+    for c in unicodedata.normalize("NFKC", text):
+        c = fold_letter(ord(c)) or c
+        if is_pictograph(ord(c)):
+            continue
         if ord(c) < 0x20 or ord(c) == 0x7F:
             c = " "
         if c in WHITESPACE:
@@ -280,6 +311,15 @@ SANITIZE_CASES = [
     ("x\u0000y\u007fz", "x y z"),
     ("　Tokyo　", "Tokyo"),
     ("tab\u0085nel", "tab nel"),
+    ("\U0001d401\U0001d428\U0001d425\U0001d41d \U0001d4fc\U0001d4ec\U0001d4fb\U0001d4f2\U0001d4f9\U0001d4fd", "Bold script"),
+    ("Ｔｅａｍ Ⓐ", "Team A"),  # fullwidth, circled letter
+    ("Team \U0001f389 lunch \U0001f355", "Team lunch"),
+    ("\U0001f468‍\U0001f4bb Dev sync ✅️", "Dev sync"),
+    ("\U0001f1fa\U0001f1f8 Holiday", "Holiday"),  # regional-indicator flag
+    ("Café → office", "Café office"),  # NFKC composes; arrow dropped
+    ("\U0001f600", ""),
+    ("ʙᴇᴘ ʀᴇᴠɪᴇᴡ \U0001f697", "bep review"),  # small capitals
+    ("\U0001f150\U0001f151 \U0001f17e\U0001f17f", "AB OP"),  # negative circled / squared
 ]
 
 

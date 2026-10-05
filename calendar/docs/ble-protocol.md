@@ -69,6 +69,11 @@ Non-goals (v1)
   encrypted, authenticated (MITM) link.
 - One sync session should complete in ≤ 15 s wall time, hard-capped; on timeout
   the X3 disconnects and treats the sync as failed.
+- Transient failures (no advertiser found, connect timeout, service missing,
+  read failed) are retried **twice**, 3 s apart, within the same wake. Security
+  failures are not retried (§5 handles them). Observed on hardware: the phone's
+  advertising occasionally goes unseen for a few minutes, and a connect can
+  time out right after a successful scan.
 
 ## 3. GATT database
 
@@ -175,7 +180,16 @@ Rules (phone):
   attendee status is tentative or the event status is tentative.
 - Bad source data with `end < start` is encoded with `endMin = startMin`.
 - Text (must be byte-identical across implementations):
+  0. Normalize to **NFKC**, so styled letters (𝐁𝐨𝐥𝐝, 𝓼𝓬𝓻𝓲𝓹𝓽, fullwidth,
+     circled) become plain characters the X3's Latin fonts can draw. Then
+     fold styled letters NFKC leaves alone: small capitals ᴀ ʙ ᴄ ᴅ ᴇ ꜰ ɢ ʜ ɪ ᴊ
+     ᴋ ʟ ᴍ ɴ ᴏ ᴘ ꞯ ʀ ꜱ ᴛ ᴜ ᴠ ᴡ ʏ ᴢ → a–z (`SMALL_CAPS` in the script), and
+     U+1F150–U+1F169 / U+1F170–U+1F189 (negative circled / squared) → A–Z.
   1. Replace each control character U+0000–U+001F and U+007F with U+0020.
+     Drop (remove, not replace) emoji and pictographic symbols the X3 cannot
+     draw: U+200D, U+20E3, U+FE00–U+FE0F, U+E0020–U+E007F (sequence glue),
+     U+2190–U+21FF, U+2300–U+23FF, U+25A0–U+27BF, U+2900–U+297F,
+     U+2B00–U+2BFF and U+1F000–U+1FAFF.
   2. Split on runs of **Unicode White_Space** characters — exactly U+0009–U+000D,
      U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F,
      U+205F, U+3000 — drop empty pieces, join with a single U+0020.
@@ -306,10 +320,11 @@ cache, mark stale, retry **once** 5 min later; after that, back to hourly.
 
 - Typical day: 10 events × (6 + ~25 B title) ≈ 320 B → one chunk, one or two
   reads at MTU 247. Worst case: 4 chunks ≈ 9 reads.
-- X3 radio time per hourly sync: scan ~1 s typical (8 s when the phone is away)
-  + ~1 s connected. At ~80–100 mA while scanning/connected this is ≈ 0.05 mAh
-  per sync (0.25 mAh when the phone is away) → ~1–6 mAh/day, small next to
-  deep-sleep drain (to be measured).
+- X3 radio time per hourly sync: scan ~1 s typical + ~1 s connected; with the
+  phone away, three 8 s scans plus 6 s of retry delay (radio idle). At
+  ~80–100 mA while scanning/connected this is ≈ 0.05 mAh per sync (≈ 0.7 mAh
+  when the phone is away) → ~1–17 mAh/day, small next to deep-sleep drain (to
+  be measured).
 - Phone: low-power advertising + idle GATT server; expected negligible, to be
   measured on the target phone.
 

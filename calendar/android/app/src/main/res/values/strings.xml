@@ -15,6 +15,11 @@
     <string name="btn_stop">Stop serving</string>
     <string name="btn_battery">Battery optimisation exemption</string>
     <string name="btn_bluetooth_settings">Bluetooth settings (pairing)</string>
+    <string name="btn_hidden_save">Save hidden events</string>
+
+    <string name="hidden_label">Hide all-day events whose title or location contains (one per line):</string>
+    <string name="hidden_hint">e.g. Office</string>
+    <string name="hidden_saved">Saved. The X3 picks this up on its next sync.</string>
 
     <string name="yes">yes</string>
     <string name="no">no</string>

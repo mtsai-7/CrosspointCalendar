@@ -1,6 +1,7 @@
 package io.github.mtsai7.xcal.protocol
 
 import java.io.ByteArrayOutputStream
+import java.text.Normalizer
 
 /**
  * Text rules of spec §4.2. Must stay byte-identical to tools/xcal_protocol.py:
@@ -14,14 +15,34 @@ object TextRules {
 
     private fun isControl(cp: Int): Boolean = cp < 0x20 || cp == 0x7F
 
-    /** Controls -> space, split on White_Space runs, rejoin with single spaces. */
+    /** Emoji, emoji-sequence glue and pictographic symbols the X3 fonts cannot draw (PICTOGRAPH_RANGES). */
+    private fun isPictograph(cp: Int): Boolean =
+        cp == 0x200D || cp == 0x20E3 || cp in 0xFE00..0xFE0F || cp in 0xE0020..0xE007F ||
+            cp in 0x2190..0x21FF || cp in 0x2300..0x23FF || cp in 0x25A0..0x27BF || cp in 0x2900..0x297F ||
+            cp in 0x2B00..0x2BFF || cp in 0x1F000..0x1FAFF
+
+    /** "Fancy text" letters NFKC leaves alone: small capitals -> lowercase (SMALL_CAPS in the script). */
+    private val smallCaps: Map<Int, Int> = "ᴀa ʙb ᴄc ᴅd ᴇe ꜰf ɢg ʜh ɪi ᴊj ᴋk ʟl ᴍm ɴn ᴏo ᴘp ꞯq ʀr ꜱs ᴛt ᴜu ᴠv ᴡw ʏy ᴢz"
+        .split(' ').associate { it.codePointAt(0) to it.codePointAt(it.offsetByCodePoints(0, 1)) }
+
+    /** Plain letter for a styled letter NFKC does not decompose, else [cp] unchanged. */
+    private fun foldLetter(cp: Int): Int = when (cp) {
+        in smallCaps -> smallCaps.getValue(cp)
+        in 0x1F150..0x1F169 -> 'A'.code + cp - 0x1F150 // negative circled capitals
+        in 0x1F170..0x1F189 -> 'A'.code + cp - 0x1F170 // negative squared capitals
+        else -> cp
+    }
+
+    /** NFKC, fold styled letters, drop pictographs, controls -> space, split on White_Space runs, rejoin with single spaces. */
     fun sanitize(text: String?): String {
         if (text.isNullOrEmpty()) return ""
-        val out = StringBuilder(text.length)
+        val normalized = Normalizer.normalize(text, Normalizer.Form.NFKC)
+        val out = StringBuilder(normalized.length)
         var pendingSpace = false
-        text.codePoints().forEach { raw ->
+        normalized.codePoints().forEach { raw ->
             // Lone surrogates cannot be UTF-8 encoded; treat them as U+FFFD.
-            val cp = if (raw in 0xD800..0xDFFF) 0xFFFD else raw
+            val cp = if (raw in 0xD800..0xDFFF) 0xFFFD else foldLetter(raw)
+            if (isPictograph(cp)) return@forEach
             if (isControl(cp) || isWhiteSpace(cp)) {
                 pendingSpace = out.isNotEmpty()
             } else {

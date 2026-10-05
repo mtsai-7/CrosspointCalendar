@@ -38,11 +38,20 @@ object Permissions {
 object Prefs {
     private const val FILE = "xcal"
     private const val KEY_ENABLED = "enabled"
+    private const val KEY_HIDDEN = "hidden_all_day"
 
     fun enabled(context: Context): Boolean =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, false)
 
     fun setEnabled(context: Context, value: Boolean) {
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putBoolean(KEY_ENABLED, value).apply()
+    }
+
+    /** Hide-list text, one phrase per line (see HiddenEvents). */
+    fun hiddenText(context: Context): String =
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY_HIDDEN, "") ?: ""
+
+    fun setHiddenText(context: Context, value: String) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString(KEY_HIDDEN, value).apply()
     }
 }

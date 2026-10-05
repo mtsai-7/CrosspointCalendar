@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import io.github.mtsai7.xcal.calendar.AgendaSource
+import io.github.mtsai7.xcal.calendar.HiddenEvents
 import io.github.mtsai7.xcal.protocol.PayloadCodec
 import io.github.mtsai7.xcal.protocol.PosixTz
 import io.github.mtsai7.xcal.protocol.Xcal
@@ -73,7 +74,8 @@ class SnapshotStore(private val context: Context) {
             return Snapshot(null, day0, zone, 0, noCalendarPermission = true, builtAt = now)
         }
         return try {
-            val events = source.load(zone, day0, Xcal.DAY_COUNT)
+            val hidden = HiddenEvents.parse(Prefs.hiddenText(context))
+            val events = source.load(zone, day0, Xcal.DAY_COUNT, hidden)
             val payload = PayloadCodec.encodePayload(now.epochSecond, day0.toEpochDay().toInt(), Xcal.DAY_COUNT, events)
             Snapshot(payload, day0, zone, payload[8].toInt() and 0xFF, noCalendarPermission = false, builtAt = now)
         } catch (e: RuntimeException) {

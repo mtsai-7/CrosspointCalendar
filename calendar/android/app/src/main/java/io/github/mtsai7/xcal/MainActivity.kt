@@ -9,12 +9,16 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import io.github.mtsai7.xcal.protocol.PosixTz
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -53,6 +57,24 @@ class MainActivity : Activity() {
         column.addView(button(R.string.btn_battery) { requestBatteryExemption() })
         column.addView(button(R.string.btn_bluetooth_settings) {
             startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+        })
+        column.addView(TextView(this).apply {
+            setText(R.string.hidden_label)
+            setPadding(0, pad, 0, 0)
+        })
+        val hidden = EditText(this).apply {
+            setText(Prefs.hiddenText(this@MainActivity))
+            setHint(R.string.hidden_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+            gravity = Gravity.TOP or Gravity.START
+        }
+        column.addView(hidden)
+        column.addView(button(R.string.btn_hidden_save) {
+            Prefs.setHiddenText(this, hidden.text.toString().trim())
+            // A service start rebuilds the snapshot; the X3 sees the new CRC on its next wake.
+            if (Prefs.enabled(this)) XcalService.start(this)
+            Toast.makeText(this, R.string.hidden_saved, Toast.LENGTH_SHORT).show()
         })
         val root = ScrollView(this).apply { addView(column) }
         // targetSdk 35+ draws edge-to-edge: keep content clear of the system bars.

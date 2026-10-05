@@ -16,11 +16,11 @@ import java.time.temporal.ChronoUnit
 /**
  * Reads the agenda for local days [day0, day0 + dayCount) from the phone's
  * calendar provider (every account synced to the phone), applying the
- * inclusion rules of spec §4.2.
+ * inclusion rules of spec §4.2 plus the user's [HiddenEvents] list.
  */
 class AgendaSource(private val context: Context) {
 
-    fun load(zone: ZoneId, day0: LocalDate, dayCount: Int): List<AgendaEvent> {
+    fun load(zone: ZoneId, day0: LocalDate, dayCount: Int, hidden: HiddenEvents = HiddenEvents.NONE): List<AgendaEvent> {
         // One day of margin on both sides: all-day instances are stored in UTC
         // and may sit just outside a local-time window. Exact overlap is
         // decided below on computed local minutes.
@@ -43,6 +43,10 @@ class AgendaSource(private val context: Context) {
                 if (self == Attendees.ATTENDEE_STATUS_DECLINED) continue
 
                 val allDay = c.getInt(COL_ALL_DAY) != 0
+                val title = c.getString(COL_TITLE) ?: ""
+                val location = c.getString(COL_LOCATION) ?: ""
+                if (hidden.hides(title, location, allDay)) continue
+
                 val beginMs = c.getLong(COL_BEGIN)
                 val endMs = if (c.isNull(COL_END)) beginMs else c.getLong(COL_END)
                 val startMin: Int
@@ -71,8 +75,8 @@ class AgendaSource(private val context: Context) {
                 events += AgendaEvent(
                     startMin = startMin,
                     endMin = endMin,
-                    title = c.getString(COL_TITLE) ?: "",
-                    location = c.getString(COL_LOCATION) ?: "",
+                    title = title,
+                    location = location,
                     allDay = allDay,
                     tentative = tentative,
                 )
