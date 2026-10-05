@@ -52,6 +52,10 @@ bool consumeWatchdogRestart();
 // Afterwards BLE cannot start until the next reboot.
 void releaseMemoryUnlessNeeded(bool bleNeeded);
 
+// Logs the outcome of releaseMemoryUnlessNeeded() once. Call from the main
+// loop: the release itself runs before the USB serial log is connected.
+void logMemoryReleaseOnce();
+
 // Re-applies the phone's POSIX TZ rule from the last sync (CrossPoint applies
 // the Settings zone at boot). No-op until a sync has provided one.
 void restoreTimezone();
@@ -61,6 +65,9 @@ void restoreTimezone();
 const Status& run(GfxRenderer& renderer);
 
 const Status& last();
+
+// Phone time (UTC) of the last successful sync since power-on, or 0.
+uint32_t lastSyncedUtc();
 const char* resultName(Result result);
 
 }  // namespace CalendarBle

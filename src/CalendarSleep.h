@@ -17,7 +17,8 @@ void render(GfxRenderer& renderer);
 // up the time.
 uint64_t secondsUntilNextRedraw();
 
-// Records a timer wake for the diagnostics line. Call before render().
+// Records a timer wake (wake count in the log; keeps the next-wake schedule
+// from double-booking a boundary). Call before render().
 void noteTimerWake();
 
 }  // namespace CalendarSleep

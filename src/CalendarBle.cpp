@@ -1,15 +1,18 @@
 #include "CalendarBle.h"
 
 #include <Arduino.h>
+#include <CalendarAgenda.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalPowerManager.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <NimBLEDevice.h>
 #include <esp_attr.h>
 #include <esp_bt.h>
+#include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <esp_timer.h>
 
@@ -18,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "CalendarCache.h"
 #include "fontIds.h"
 
 // Arduino's esp32-hal-bt.c defines this flag (and reclaims controller RAM at
@@ -50,6 +54,10 @@ constexpr uint8_t ST_TZ_APPLIED = 0x02;
 
 constexpr uint32_t SCAN_MS = 8000;  // spec §2.2
 constexpr uint32_t CONNECT_TIMEOUT_MS = 5000;
+// A sync wake retries transient failures (phone not found, connect timeout,
+// failed read) this many times, RETRY_DELAY_MS apart; see retryable().
+constexpr int SYNC_RETRIES = 2;
+constexpr uint32_t RETRY_DELAY_MS = 3000;
 // After a new bond, Android keeps "bonding" open while it runs its own
 // discovery on the new device; if the link drops within ~1 s it deletes the
 // bond ("ACL DISCONNECTED during Bonding"). Stay connected a while.
@@ -60,7 +68,9 @@ constexpr uint32_t PAIRING_LINGER_MS = 10000;
 // the phone's encryption this long and skip secureConnection() if it's done.
 constexpr uint32_t PEER_ENCRYPT_WAIT_MS = 2000;
 // Hard cap on one run (several NimBLE-Arduino calls wait without a timeout).
-constexpr uint64_t WATCHDOG_SYNC_US = 60ULL * 1000 * 1000;
+// Sync: up to three attempts of scan (8.5 s) + connect (5 s) + encryption wait
+// (2 s) + reads, plus the retry delays.
+constexpr uint64_t WATCHDOG_SYNC_US = 100ULL * 1000 * 1000;
 constexpr uint64_t WATCHDOG_PAIRING_US = 90ULL * 1000 * 1000;
 constexpr uint32_t WATCHDOG_MAGIC = 0x58434C57;  // "XCLW"
 constexpr int32_t CLOCK_TOLERANCE_S = 2;         // spec §6
@@ -69,6 +79,9 @@ constexpr int32_t CLOCK_TOLERANCE_S = 2;         // spec §6
 RTC_DATA_ATTR Status lastStatus;
 RTC_DATA_ATTR char phoneTz[MAX_TZ_LEN + 1];
 RTC_DATA_ATTR uint32_t shownCrc;
+// Phone time of the last successful sync (0 until one succeeds since power-on;
+// the SD cache keeps the time its payload was stored as a fallback).
+RTC_DATA_ATTR uint32_t lastSyncUtc;
 RTC_DATA_ATTR uint16_t syncCount;
 // Set just before a watchdog restart; RTC slow memory survives esp_restart().
 RTC_DATA_ATTR uint32_t watchdogMagic;
@@ -99,9 +112,12 @@ void disarmWatchdog() {
   if (watchdogTimer) esp_timer_stop(watchdogTimer);
 }
 
-// Payload reassembly buffer. Static (2 KB .bss) rather than heap: the timer-wake
-// path runs once per boot and the size is bounded by the protocol.
-uint8_t payloadBuf[MAX_PAYLOAD];
+// Outcome of the boot-time controller RAM release, logged later from the main
+// loop: the release runs before USB CDC is up, so its own log line is lost.
+esp_err_t releaseErr = ESP_OK;
+bool releaseAttempted = false;
+size_t releaseTotalBefore = 0;
+size_t releaseTotalAfter = 0;
 
 // Scan/pairing state shared with NimBLE callbacks (host task).
 volatile bool found = false;
@@ -143,16 +159,6 @@ uint32_t rd32(const uint8_t* p) {
          (static_cast<uint32_t>(p[3]) << 24);
 }
 
-// CRC-32/ISO-HDLC (zlib, java.util.zip.CRC32); bitwise is plenty for <= 2 KB.
-uint32_t crc32(const uint8_t* data, size_t len) {
-  uint32_t crc = 0xFFFFFFFFu;
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int b = 0; b < 8; b++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-  }
-  return ~crc;
-}
-
 bool bleBegin() {
   if (NimBLEDevice::isInitialized()) {
     NimBLEDevice::deinit(true);
@@ -178,18 +184,21 @@ bool bleBegin() {
   return true;
 }
 
+// Delete the client only once DISCONNECTED: a deferred delete leaks NimBLE's
+// client slot across deinit (see freeink-sdk BleKeyboardHost::end).
+void releaseClient(NimBLEClient*& client) {
+  if (!client) return;
+  if (client->isConnected()) client->disconnect();
+  for (int i = 0; i < 60 && client->isConnected(); ++i) delay(10);
+  delay(150);
+  NimBLEDevice::deleteClient(client);
+  client = nullptr;
+}
+
 void bleEnd(NimBLEClient*& client) {
   NimBLEScan* scan = NimBLEDevice::getScan();
   if (scan && scan->isScanning()) scan->stop();
-  // Delete the client only once DISCONNECTED, then deinit: a deferred delete
-  // leaks NimBLE's client slot across deinit (see freeink-sdk BleKeyboardHost::end).
-  if (client) {
-    if (client->isConnected()) client->disconnect();
-    for (int i = 0; i < 60 && client->isConnected(); ++i) delay(10);
-    delay(150);
-    NimBLEDevice::deleteClient(client);
-    client = nullptr;
-  }
+  releaseClient(client);
   NimBLEDevice::deinit(true);
 }
 
@@ -275,27 +284,43 @@ void syncSession(NimBLEClient* client, Status& st) {
     halClock.setTimezone(phoneTz);
   }
 
-  // Payload (spec §7 step 5): only when it changed since the last verified one.
+  // Payload (spec §7 step 5): only when it differs from the cached one (the
+  // SD cache is what the sleep screen draws, so it is the source of truth).
+  shownCrc = CalendarCache::storedCrc();
   if ((flags & HDR_PAYLOAD_VALID) && payloadCrc != shownCrc) {
+    // Heap, not .bss: only calendar wakes need it, and a static buffer would
+    // cost every reading session 2 KB. Freed when this scope ends.
+    const auto payloadBuf = makeUniqueNoThrow<uint8_t[]>(MAX_PAYLOAD);
+    if (!payloadBuf) {
+      LOG_ERR("BLE", "OOM for %u-byte payload buffer", static_cast<unsigned>(MAX_PAYLOAD));
+      st.result = Result::BadPayload;
+      return;
+    }
     size_t got = 0;
     for (uint8_t i = 0; i < chunkCount; i++) {
       NimBLERemoteCharacteristic* chunk = svc->getCharacteristic(NimBLEUUID(CHUNK_UUIDS[i]));
       const NimBLEAttValue v = chunk ? chunk->readValue() : NimBLEAttValue();
       if (v.size() == 0 || got + v.size() > MAX_PAYLOAD) break;
-      memcpy(payloadBuf + got, v.data(), v.size());
+      memcpy(payloadBuf.get() + got, v.data(), v.size());
       got += v.size();
       st.chunksRead++;
     }
-    if (got != payloadLen || crc32(payloadBuf, got) != payloadCrc || got < 10 || payloadBuf[0] != 1) {
+    calendar::Agenda agenda;
+    if (got != payloadLen || calendar::crc32(payloadBuf.get(), got) != payloadCrc ||
+        !agenda.parse(payloadBuf.get(), got)) {
       LOG_ERR("BLE", "Payload rejected: got %u of %u bytes", static_cast<unsigned>(got), payloadLen);
       st.result = Result::BadPayload;
       return;
     }
+    if (!CalendarCache::save(payloadBuf.get(), got, payloadCrc, nowUtc)) {
+      LOG_ERR("BLE", "Could not store the agenda on the SD card");
+    }
     shownCrc = payloadCrc;
-    st.eventCount = payloadBuf[8];
+    st.eventCount = agenda.eventCount();
   } else if (payloadCrc == shownCrc) {
     st.eventCount = lastStatus.eventCount;
   }
+  lastSyncUtc = nowUtc;
 
   // STATUS write-back (spec §4.3), kept within one ATT write at MTU 247.
   NimBLERemoteCharacteristic* statusChr = svc->getCharacteristic(NimBLEUUID(STATUS_UUID));
@@ -339,10 +364,23 @@ bool consumeWatchdogRestart() {
 
 void releaseMemoryUnlessNeeded(const bool bleNeeded) {
   if (bleNeeded) return;
-  const size_t before = ESP.getFreeHeap();
-  const esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
-  LOG_INF("BLE", "Controller RAM release: err=%d, free heap %u -> %u", err, static_cast<unsigned>(before),
-          static_cast<unsigned>(ESP.getFreeHeap()));
+  releaseAttempted = true;
+  releaseTotalBefore = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+  releaseErr = esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+  releaseTotalAfter = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+}
+
+void logMemoryReleaseOnce() {
+  static bool logged = false;
+  if (logged) return;
+  logged = true;
+  if (!releaseAttempted) {
+    LOG_INF("BLE", "Controller RAM kept (BLE boot)");
+    return;
+  }
+  LOG_INF("BLE", "Controller RAM release at boot: err=%d, internal heap total %u -> %u (+%d)", releaseErr,
+          static_cast<unsigned>(releaseTotalBefore), static_cast<unsigned>(releaseTotalAfter),
+          static_cast<int>(releaseTotalAfter) - static_cast<int>(releaseTotalBefore));
 }
 
 void restoreTimezone() {
@@ -350,6 +388,8 @@ void restoreTimezone() {
 }
 
 const Status& last() { return lastStatus; }
+
+uint32_t lastSyncedUtc() { return lastSyncUtc; }
 
 const char* resultName(const Result result) {
   switch (result) {
@@ -383,6 +423,87 @@ const char* resultName(const Result result) {
   return "?";
 }
 
+namespace {
+
+// Failures worth another scan/connect within the same wake: the phone's
+// advertising or radio was briefly unavailable. Security failures are not
+// retried (they carry the bond-repair logic in attempt()).
+bool retryable(const Result r) {
+  return r == Result::NotFound || r == Result::ConnectFailed || r == Result::NoService || r == Result::ReadFailed;
+}
+
+// One scan -> connect -> secure -> read attempt. Leaves `client` for the
+// caller to release.
+void attempt(GfxRenderer& renderer, NimBLEClient*& client, Status& st, const bool pairing) {
+  st = Status{};
+  if (!scanForPhone()) {
+    st.result = Result::NotFound;
+    return;
+  }
+  LOG_INF("BLE", "Found phone at %s", foundAddr.toString().c_str());
+  if (pairing) {
+    passkey = 100000 + esp_random() % 900000;
+    NimBLEDevice::setSecurityPasskey(passkey);
+    renderPairingScreen(renderer, passkey);
+  }
+  client = NimBLEDevice::createClient();
+  if (client) {
+    client->setClientCallbacks(&clientCallbacks, false);
+    client->setConnectTimeout(CONNECT_TIMEOUT_MS);
+  }
+  if (!client || !client->connect(foundAddr)) {
+    st.result = Result::ConnectFailed;
+    st.error = client ? static_cast<int16_t>(client->getLastError()) : -1;
+    return;
+  }
+
+  const NimBLEConnInfo info = client->getConnInfo();
+  const bool knownPeer = NimBLEDevice::isBonded(info.getIdAddress());
+  LOG_INF("BLE", "Connected ota=%s id=%s bonded=%d mtu=%u", info.getAddress().toString().c_str(),
+          info.getIdAddress().toString().c_str(), knownPeer ? 1 : 0, client->getMTU());
+  bool secured = false;
+  if (!pairing && knownPeer) {
+    const uint32_t waitStart = millis();
+    while (client->isConnected() && !client->getConnInfo().isEncrypted() &&
+           millis() - waitStart < PEER_ENCRYPT_WAIT_MS) {
+      delay(20);
+    }
+    secured = client->getConnInfo().isEncrypted();
+    LOG_INF("BLE", "Link %s after %lums", secured ? "encrypted by peer" : "not yet encrypted",
+            static_cast<unsigned long>(millis() - waitStart));
+  }
+  if (!pairing && !knownPeer) {
+    // Spec R1: the phone's private address did not resolve to our bond.
+    st.result = Result::UnknownPeer;
+    return;
+  }
+  if (!(secured || client->secureConnection()) || unexpectedPairing) {
+    st.result = Result::SecurityFailed;
+    st.error = static_cast<int16_t>(client->getLastError());
+    const bool phoneLostKeys = unexpectedPairing || st.error == BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING);
+    if (!pairing && phoneLostKeys) {
+      // The phone no longer has our keys (bond removed on its side; it
+      // asks to pair or reports the key missing): drop ours so the next
+      // wake re-pairs instead of failing forever. Other security errors
+      // (e.g. radio trouble) keep the bond.
+      LOG_ERR("BLE", "Encryption with stored bond failed (err=%d); deleting bond %s", st.error,
+              info.getIdAddress().toString().c_str());
+      NimBLEDevice::deleteBond(info.getIdAddress());
+    }
+    return;
+  }
+  LOG_INF("BLE", "Secured (encrypted=%d bonded=%d), reading", client->getConnInfo().isEncrypted() ? 1 : 0,
+          client->getConnInfo().isBonded() ? 1 : 0);
+  syncSession(client, st);
+  if (pairing && st.result == Result::Ok) {
+    st.result = Result::Paired;
+    const uint32_t lingerStart = millis();
+    while (client->isConnected() && millis() - lingerStart < PAIRING_LINGER_MS) delay(100);
+  }
+}
+
+}  // namespace
+
 const Status& run(GfxRenderer& renderer) {
   const uint32_t start = millis();
   Status st{};
@@ -405,66 +526,17 @@ const Status& run(GfxRenderer& renderer) {
     LOG_INF("BLE", "NimBLE up (bonds=%d, %s), free heap %u", NimBLEDevice::getNumBonds(), pairing ? "pairing" : "sync",
             static_cast<unsigned>(ESP.getFreeHeap()));
 
-    if (!scanForPhone()) {
-      st.result = Result::NotFound;
-    } else {
-      LOG_INF("BLE", "Found phone at %s", foundAddr.toString().c_str());
-      if (pairing) {
-        passkey = 100000 + esp_random() % 900000;
-        NimBLEDevice::setSecurityPasskey(passkey);
-        renderPairingScreen(renderer, passkey);
+    // Pairing shows a passkey for this attempt only, so it is not retried.
+    const int attempts = pairing ? 1 : 1 + SYNC_RETRIES;
+    for (int i = 0; i < attempts; ++i) {
+      if (i > 0) {
+        LOG_INF("BLE", "Attempt %d failed (%s, err=%d); retrying in %lus", i, resultName(st.result), st.error,
+                static_cast<unsigned long>(RETRY_DELAY_MS / 1000));
+        releaseClient(client);
+        delay(RETRY_DELAY_MS);
       }
-      client = NimBLEDevice::createClient();
-      if (client) {
-        client->setClientCallbacks(&clientCallbacks, false);
-        client->setConnectTimeout(CONNECT_TIMEOUT_MS);
-      }
-      if (!client || !client->connect(foundAddr)) {
-        st.result = Result::ConnectFailed;
-        st.error = client ? static_cast<int16_t>(client->getLastError()) : -1;
-      } else {
-        const NimBLEConnInfo info = client->getConnInfo();
-        const bool knownPeer = NimBLEDevice::isBonded(info.getIdAddress());
-        LOG_INF("BLE", "Connected ota=%s id=%s bonded=%d mtu=%u", info.getAddress().toString().c_str(),
-                info.getIdAddress().toString().c_str(), knownPeer ? 1 : 0, client->getMTU());
-        bool secured = false;
-        if (!pairing && knownPeer) {
-          const uint32_t waitStart = millis();
-          while (client->isConnected() && !client->getConnInfo().isEncrypted() &&
-                 millis() - waitStart < PEER_ENCRYPT_WAIT_MS) {
-            delay(20);
-          }
-          secured = client->getConnInfo().isEncrypted();
-          LOG_INF("BLE", "Link %s after %lums", secured ? "encrypted by peer" : "not yet encrypted",
-                  static_cast<unsigned long>(millis() - waitStart));
-        }
-        if (!pairing && !knownPeer) {
-          // Spec R1: the phone's private address did not resolve to our bond.
-          st.result = Result::UnknownPeer;
-        } else if (!(secured || client->secureConnection()) || unexpectedPairing) {
-          st.result = Result::SecurityFailed;
-          st.error = static_cast<int16_t>(client->getLastError());
-          const bool phoneLostKeys = unexpectedPairing || st.error == BLE_HS_HCI_ERR(BLE_ERR_PINKEY_MISSING);
-          if (!pairing && phoneLostKeys) {
-            // The phone no longer has our keys (bond removed on its side; it
-            // asks to pair or reports the key missing): drop ours so the next
-            // wake re-pairs instead of failing forever. Other security errors
-            // (e.g. radio trouble) keep the bond.
-            LOG_ERR("BLE", "Encryption with stored bond failed (err=%d); deleting bond %s", st.error,
-                    info.getIdAddress().toString().c_str());
-            NimBLEDevice::deleteBond(info.getIdAddress());
-          }
-        } else {
-          LOG_INF("BLE", "Secured (encrypted=%d bonded=%d), reading", client->getConnInfo().isEncrypted() ? 1 : 0,
-                  client->getConnInfo().isBonded() ? 1 : 0);
-          syncSession(client, st);
-          if (pairing && st.result == Result::Ok) {
-            st.result = Result::Paired;
-            const uint32_t lingerStart = millis();
-            while (client->isConnected() && millis() - lingerStart < PAIRING_LINGER_MS) delay(100);
-          }
-        }
-      }
+      attempt(renderer, client, st, pairing);
+      if (!retryable(st.result)) break;
     }
   }
   bleEnd(client);

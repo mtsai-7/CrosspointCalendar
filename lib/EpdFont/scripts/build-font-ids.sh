@@ -94,6 +94,14 @@ ruby -rdigest -e 'puts [
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
+# Calendar sleep screen event titles (regular + bold only).
+echo "#define CALENDAR_TITLE_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./notosans_11_regular.h",
+  "./notosans_11_bold.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
 echo "#define SMALL_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./notosans_8_regular.h",
@@ -111,6 +119,7 @@ FONT_ID_NAMES=(
   NOTOSANS_18_FONT_ID
   UI_10_FONT_ID
   UI_12_FONT_ID
+  CALENDAR_TITLE_FONT_ID
   SMALL_FONT_ID
 )
 

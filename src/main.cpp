@@ -128,6 +128,11 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, 
 EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
 
+// Calendar sleep screen event titles (CalendarSleep.cpp).
+EpdFont calendarTitleRegularFont(&notosans_11_regular);
+EpdFont calendarTitleBoldFont(&notosans_11_bold);
+EpdFontFamily calendarTitleFontFamily(&calendarTitleRegularFont, &calendarTitleBoldFont);
+
 EpdFont ui10RegularFont(&ubuntu_10_regular);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
@@ -348,6 +353,7 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
+  renderer.insertFont(CALENDAR_TITLE_FONT_ID, calendarTitleFontFamily);
 
   // Discover and load SD card fonts
   sdFontSystem.begin(renderer);
@@ -648,6 +654,7 @@ void loop() {
     const auto heap = HalMemory::getInternalHeap();
     LOG_INF("MEM", "Free: %zu bytes, Total: %zu bytes, Min Free: %zu bytes, MaxAlloc: %zu bytes", heap.freeBytes,
             heap.totalBytes, heap.minFreeBytes, heap.largestBlockBytes);
+    CalendarBle::logMemoryReleaseOnce();
 #ifdef BOARD_HAS_PSRAM
     const auto psram = HalMemory::getPsramHeap();
     LOG_INF("MEM", "PSRAM: Free: %zu bytes, Total: %zu bytes, Min Free: %zu bytes, MaxAlloc: %zu bytes",

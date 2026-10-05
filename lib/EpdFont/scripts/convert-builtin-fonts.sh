@@ -28,6 +28,15 @@ for size in ${NOTOSANS_FONT_SIZES[@]}; do
   done
 done
 
+# Calendar sleep screen event titles: one point under the 12 pt reader size.
+for style in "Regular" "Bold"; do
+  font_name="notosans_11_$(echo $style | tr '[:upper:]' '[:lower:]')"
+  font_path="../builtinFonts/source/NotoSans/NotoSans-${style}.ttf"
+  output_path="../builtinFonts/${font_name}.h"
+  python fontconvert.py $font_name 11 $font_path --2bit --compress --pnum --zopfli > $output_path
+  echo "Generated $output_path"
+done
+
 UI_FONT_SIZES=(10 12)
 UI_FONT_STYLES=("Regular" "Bold")
 

@@ -71,5 +71,7 @@ add_subdirectory(fs_helpers)
 
 add_subdirectory(absolute_grayscale)
 
+add_subdirectory(calendar_agenda)
+
 add_subdirectory(sd_card_font)
 add_subdirectory(glyph_bitmap)
