@@ -24,15 +24,22 @@
 #ifndef CALENDAR_REDRAW_INTERVAL_S
 #define CALENDAR_REDRAW_INTERVAL_S 3600
 #endif
+// Seconds past the hour to sync: :55 refreshes the agenda just before the
+// next hour's meetings start (taken modulo the interval for test builds).
+#ifndef CALENDAR_REDRAW_OFFSET_S
+#define CALENDAR_REDRAW_OFFSET_S (55 * 60)
+#endif
 
 namespace CalendarSleep {
 namespace {
 
 constexpr int REDRAW_INTERVAL_S = CALENDAR_REDRAW_INTERVAL_S;
 static_assert(REDRAW_INTERVAL_S > 0 && 3600 % REDRAW_INTERVAL_S == 0, "redraw interval must divide one hour");
+constexpr int REDRAW_PHASE_S = CALENDAR_REDRAW_OFFSET_S % REDRAW_INTERVAL_S;
+static_assert(CALENDAR_REDRAW_OFFSET_S >= 0 && CALENDAR_REDRAW_OFFSET_S < 3600, "redraw offset must be within an hour");
 
 // Aim a few seconds past the boundary so a slightly slow sleep clock still
-// lands on the new hour; a timer wake this close before a boundary counts as
+// lands after the boundary; a timer wake this close before a boundary counts as
 // that boundary's wake instead of scheduling a second one seconds later.
 constexpr int LATE_MARGIN_S = 5;
 constexpr int EARLY_WAKE_TOLERANCE_S = std::min(60, REDRAW_INTERVAL_S / 4);
@@ -440,7 +447,9 @@ void render(GfxRenderer& renderer) {
 uint64_t secondsUntilNextRedraw() {
   struct tm now;
   if (!halClock.localTime(now)) return REDRAW_INTERVAL_S;
-  const int intoInterval = (now.tm_min * 60 + now.tm_sec) % REDRAW_INTERVAL_S;
+  // Seconds since the last scheduled wake (+3600 keeps it non-negative; the
+  // interval divides 3600).
+  const int intoInterval = (now.tm_min * 60 + now.tm_sec - REDRAW_PHASE_S + 3600) % REDRAW_INTERVAL_S;
   int wait = REDRAW_INTERVAL_S - intoInterval;
   if (inTimerWake && wait <= EARLY_WAKE_TOLERANCE_S) wait += REDRAW_INTERVAL_S;
   return static_cast<uint64_t>(wait + LATE_MARGIN_S);

@@ -257,7 +257,7 @@ The phone shows battery / last sync in its notification. Writes with an unknown
   scanner can tell "a phone running XCAL is here" even though the address
   rotates. It reveals nothing about calendar contents. Acceptable for a
   personal device; a later version could advertise only during a short window
-  around `:00`.
+  around the X3's sync minute (`:55`).
 
 ## 6. Time and timezone
 
@@ -285,7 +285,8 @@ The phone shows battery / last sync in its notification. Writes with an unknown
 
 ## 7. X3 sync procedure (timer wake)
 
-1. Wake at local `hh:00:05`. Init NimBLE (only on this path and in the pairing UI).
+1. Wake at local `hh:55:05` (firmware `CALENDAR_REDRAW_OFFSET_S`; just before
+   the next hour's meetings). Init NimBLE (only on this path and in the pairing UI).
 2. Scan ≤ 8 s; connect; MTU 247; secure with stored bond (§5).
 3. Read HEADER; check `protoMajor == 1`.
 4. Apply time/timezone (§6).
@@ -299,7 +300,7 @@ The phone shows battery / last sync in its notification. Writes with an unknown
 7. Write STATUS.
 8. Disconnect; deinit NimBLE to release its heap.
 9. Render from cache (updates the "now" marker even when nothing changed),
-   show "synced HH:MM" of the last successful sync, deep-sleep to next `:00:05`.
+   show "synced HH:MM" of the last successful sync, deep-sleep to next `:55:05`.
 
 Failures (no phone found, security failure, timeout, bad CRC): render from
 cache, mark stale, retry **once** 5 min later; after that, back to hourly.
