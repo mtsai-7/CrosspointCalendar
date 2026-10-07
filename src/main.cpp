@@ -311,7 +311,10 @@ void enterDeepSleep(bool fromTimeout = false) {
   Storage.prepareForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
-  powerManager.startDeepSleep(gpio, calendarWakeSeconds());
+  // Calendar: sync shortly after the user sleeps the X3 (wake + sleep forces a
+  // sync); that timer wake then goes back to the regular schedule.
+  const bool calendar = SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::CALENDAR;
+  powerManager.startDeepSleep(gpio, calendar ? CalendarSleep::SYNC_ON_SLEEP_S : 0);
 }
 
 void setupDisplayAndFonts(bool seamless = false) {

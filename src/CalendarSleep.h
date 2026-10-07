@@ -12,7 +12,12 @@ namespace CalendarSleep {
 // Draws the calendar sleep screen and refreshes the panel.
 void render(GfxRenderer& renderer);
 
-// Seconds until the next redraw boundary (top of the hour by default). Never 0:
+// Delay before the sync wake that follows the user putting the X3 to sleep
+// (power button or inactivity timeout): waking and sleeping again is the way
+// to force a sync. That wake then returns to the regular schedule.
+constexpr uint64_t SYNC_ON_SLEEP_S = 5;
+
+// Seconds until the next redraw boundary (hh:55 by default). Never 0:
 // without a valid clock it still returns the interval so a later wake can pick
 // up the time.
 uint64_t secondsUntilNextRedraw();

@@ -161,10 +161,16 @@ struct Columns {
   int textWidth;
 };
 
+// End times sit two "i" widths further right than start times, so the pair
+// reads as start -> end at a glance.
+int endTimeIndent(const GfxRenderer& r) { return 2 * r.getTextWidth(TIME_FONT, "i"); }
+
 Columns columnsFor(const GfxRenderer& r, const int width) {
-  // Widest time label: "00:00" or "12:00 PM", or the all-day label.
-  const int timeW = std::max(r.getTextWidth(TIME_FONT, SETTINGS.clockFormat == 1 ? "12:00 PM" : "00:00"),
-                             r.getTextWidth(TIME_FONT, tr(STR_CAL_ALL_DAY)));
+  // Widest time label: "00:00" or "12:00 PM" (plus the end-time indent), or
+  // the all-day label.
+  const int timeW =
+      std::max(r.getTextWidth(TIME_FONT, SETTINGS.clockFormat == 1 ? "12:00 PM" : "00:00") + endTimeIndent(r),
+               r.getTextWidth(TIME_FONT, tr(STR_CAL_ALL_DAY)));
   const int textX = MARGIN_X + timeW + COLUMN_GAP;
   return {MARGIN_X, textX, MARGIN_X + width - textX};
 }
@@ -210,7 +216,9 @@ void drawEvent(const GfxRenderer& r, const calendar::AgendaEvent& ev, const int 
     char end[12];
     calendar::formatEventTimes(ev, dayIndex, SETTINGS.clockFormat == 1, start, sizeof(start), end, sizeof(end));
     r.drawText(TIME_FONT, cols.timeX, timeY, start);
-    if (end[0]) r.drawText(TIME_FONT, cols.timeX, timeY + r.getLineHeight(TIME_FONT) + LINE_GAP, end);
+    if (end[0]) {
+      r.drawText(TIME_FONT, cols.timeX + endTimeIndent(r), timeY + r.getLineHeight(TIME_FONT) + LINE_GAP, end);
+    }
   }
 
   size_t titleLen = 0;
