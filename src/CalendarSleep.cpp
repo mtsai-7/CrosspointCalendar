@@ -447,6 +447,8 @@ void render(GfxRenderer& renderer) {
   } else {
     renderNoTime(renderer);
   }
+  // Dark option: drawn as usual, then inverted to white on black.
+  if (SETTINGS.calendarDark) renderer.invertScreen();
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   LOG_INF("CAL", "Rendered calendar sleep screen (#%lu, timer wakes %lu)", static_cast<unsigned long>(sleepRenderCount),
           static_cast<unsigned long>(timerWakeCount));

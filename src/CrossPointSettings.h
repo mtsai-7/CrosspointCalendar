@@ -226,6 +226,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Sleep screen settings. Calendar by default: this fork's purpose is the
   // self-updating calendar sleep screen; waking still boots the reader UI.
   uint8_t sleepScreen = CALENDAR;
+  // Calendar sleep screen colors: 0 = black on white, 1 = white on black.
+  uint8_t calendarDark = 0;
   // Night mode: inverted output polarity, applied to every activity per
   // render by ActivityManager. The sleep screen opts out itself.
   uint8_t screenInverted = 0;
