@@ -1,5 +1,11 @@
 # CrossPoint Reader
 
+> **This fork: CrossPoint Calendar.** The `calendar` branch turns the Xteink X3's
+> sleep screen into a self-updating agenda, synced over Bluetooth LE from an
+> Android phone. Wake the X3 and it is the normal CrossPoint reader. See
+> [CrossPoint Calendar](#crosspoint-calendar-this-fork) below; everything else in
+> this README is upstream CrossPoint.
+
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
 CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
@@ -59,6 +65,73 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 - Much more! stay tuned.
 
 ---
+
+## CrossPoint Calendar (this fork)
+
+Today's agenda on the X3's sleep screen, kept current by a small Android app.
+Built and tested on the Xteink X3; reader features are unchanged.
+
+### What it shows
+
+- Today's date, then each event: start time over an indented end time,
+  title (tentative events in regular weight) and location. Events that
+  ended more than an hour ago drop off.
+- Tomorrow's events below a separator with tomorrow's date, as space allows;
+  "+N more" when the day doesn't fit.
+- A footer: when the agenda was last updated (and why the last sync failed,
+  if it did), when the next sync is due, and the battery level.
+- **Settings → Display → Calendar Colors**: Light (black on white) or Dark
+  (white on black). The calendar is the default **Sleep Screen**; choose it
+  there if you changed it.
+
+### How it syncs
+
+- The X3 wakes from deep sleep at **:55 past every hour**, syncs over BLE,
+  redraws and sleeps again, so the screen is fresh just before each hour's
+  meetings. The power button still wakes it into the reader.
+- **Force a sync**: wake the X3 and put it back to sleep. It shows the
+  calendar right away and redraws with fresh data about 10 seconds later.
+- Transient failures (phone out of range, connection timeout) are retried
+  twice, 3 s apart, within the same wake. When the phone isn't around, the
+  X3 keeps showing the last agenda, cached on the SD card
+  (`/.crosspoint/calendar.bin`).
+- The phone also sets the X3's clock and time zone (including DST rules) on
+  each sync.
+- Bluetooth is only started on calendar wakes; the reader gets the
+  Bluetooth controller's memory back on every other boot.
+
+### The phone app
+
+[`calendar/android`](calendar/android/README.md): a foreground service that
+reads today's and tomorrow's events from the phone's calendars and serves them
+to the X3 (Android 12+). It runs in whichever profile it is installed in, so
+installing it only in a work profile shows only work calendars. It can hide
+recurring all-day noise (e.g. a working-location event) by title, and it
+cleans titles for the X3's fonts: styled "fancy text" letters become plain
+letters, emoji are dropped.
+
+### Pairing
+
+With no phone paired, the next calendar wake shows a six-digit passkey on the
+X3; enter it when Android asks. The bond is kept on both sides; if the phone
+forgets it, the X3 notices and pairs again on a later wake.
+
+### Building
+
+PlatformIO environments (X3 firmware):
+
+| Env | Sync interval | Logging |
+|---|---|---|
+| `calhourly` | hourly at :55 | errors only (everyday build) |
+| `caltest` | every 2 minutes | debug, for testing |
+
+```bash
+pio run -e calhourly -t upload
+```
+
+The protocol is specified in
+[`calendar/docs/ble-protocol.md`](calendar/docs/ble-protocol.md), with a
+Python reference codec in [`calendar/tools`](calendar/tools/xcal_protocol.py).
 
 ## USB-locked devices (Xteink Unlocker)
 

@@ -8,10 +8,22 @@ targetSdk 36, compileSdk 37.
 
 ## Status
 
-Builds and passes its unit tests (2026-09-29): AGP 9.4.1 (built-in Kotlin),
-Gradle 9.8.0 wrapper, Android Studio 2026.1's bundled JDK 25, SDK at
-`D:\Android\Sdk`. 20/20 JVM tests reproduce the spec's test vectors.
-Not yet run on the phone.
+In daily use with an X3 since October 2026 (Android 16). Built with AGP 9.4.1
+(built-in Kotlin), the Gradle 9.8.0 wrapper and Android Studio's bundled JDK;
+the JVM unit tests reproduce the spec's test vectors.
+
+## Features
+
+- Serves today's and tomorrow's events (all calendars visible in the profile
+  the app runs in; cancelled and declined events are left out).
+- **Hidden events**: a box on the app's screen hides all-day events whose
+  title or location contains any of the listed phrases (one per line,
+  case-insensitive), e.g. a daily working-location event. Timed events are
+  never hidden by it. The list is stored on the phone only.
+- **Text cleanup** (spec §4.2): styled Unicode letters (bold/script
+  mathematical letters, fullwidth, circled, small capitals) become plain
+  letters, and emoji / pictographs the X3 fonts cannot draw are dropped.
+- Keeps the X3's clock and time zone in step with the phone.
 
 ## Build
 
@@ -42,8 +54,10 @@ Not yet run on the phone.
    service gets killed.
 3. *Start serving*. The notification shows "Waiting for the X3's first sync"
    once advertising is up.
-4. Pairing is started from the X3 (Settings → Calendar → Pair phone, firmware
-   still to be written); Android then prompts for the passkey the X3 shows.
+4. Pairing is started by the X3: with no phone paired, its next calendar wake
+   shows a six-digit passkey; Android then asks for it.
+5. Optional: list phrases under *Hide all-day events…* and tap *Save hidden
+   events*.
 
 ## Layout
 
@@ -54,18 +68,18 @@ Not yet run on the phone.
 | `protocol/PayloadCodec.kt` | HEADER / PAYLOAD encoders, STATUS decoder, CRC |
 | `protocol/PosixTz.kt` | `ZoneId` → POSIX TZ rule (spec §6), with a fallback for platforms that expose no transition rules |
 | `calendar/AgendaSource.kt` | `CalendarContract.Instances` query and inclusion rules |
+| `calendar/HiddenEvents.kt` | the user's hide-list for all-day events |
 | `SnapshotStore.kt` | immutable payload snapshots, debounced rebuilds |
 | `XcalGattServer.kt` | GATT service, per-connection pinning, long reads/writes, advertising |
 | `XcalService.kt` | foreground service, triggers, notification |
 | `MainActivity.kt` | status + actions |
 | `BootReceiver.kt` | restart after boot/update |
 
-## Known gaps / to verify on the device
+## Known gaps
 
-- Spec §11 risks R2 (passkey prompt when the X3 initiates pairing) and R3
-  (`PERMISSION_READ_ENCRYPTED_MITM` rejects unbonded reads). Check R3 early with
-  nRF Connect from another phone: reading HEADER without pairing must fail.
 - Android's `ZoneRules.getTransitionRules()` may be empty on some builds; the
   app then derives the rule from upcoming transitions (covered by a unit test on
   the JVM, not yet on Android).
+- Some phones (ASUS among them) throttle background apps; without the battery
+  optimisation exemption the X3 may intermittently report "Phone not found".
 - No launcher icon yet (system default).
