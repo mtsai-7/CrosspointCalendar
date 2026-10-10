@@ -1,0 +1,3 @@
+# Patches are applied with `git apply` to LF dependency sources (scripts/patch_sdfat.py);
+# a CRLF checkout on Windows would make them fail to apply.
+*.patch text eol=lf

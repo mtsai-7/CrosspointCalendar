@@ -14,6 +14,7 @@
 #include "ReaderFontSizes.h"
 #include "SettingsList.h"
 #include "fontIds.h"
+#include "util/ParagraphIndentMigration.h"
 
 namespace {
 
@@ -64,7 +65,7 @@ uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue)
 void CrossPointSettings::toJson(JsonDocument& doc) const {
   const CrossPointSettings& s = *this;
 
-  for (const auto& info : getSettingsList()) {
+  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
@@ -100,6 +101,10 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (dictionaryName[0] != '\0') {
     doc["dictionaryName"] = dictionaryName;
   }
+  // The displayed option list varies by board, so this setting uses a dynamic
+  // display-index mapping and is skipped by the generic persistence loop.
+  doc["longPressMenuFunction"] = longPressMenuFunction;
+  doc["shortPwrBtn"] = shortPwrBtn;
 
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
@@ -118,7 +123,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 
   auto clamp = [](uint8_t val, uint8_t maxVal, uint8_t def) -> uint8_t { return val < maxVal ? val : def; };
 
-  for (const auto& info : getSettingsList()) {
+  for (const auto& info : getSettingsList(nullptr, nullptr, /*forPersistence=*/true)) {
     if (!info.key) continue;
     // Dynamic entries (KOReader etc.) are stored in their own files — skip.
     if (!info.valuePtr && !info.stringOffset) continue;
@@ -179,6 +184,12 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     }
   }
 
+  const auto indentSpaces = doc["paragraphIndentSpaces"];
+  const bool hasSavedWidth = indentSpaces.is<int>();
+  const int savedWidth = hasSavedWidth ? indentSpaces.as<int>() : 0;
+  paragraphIndentSpaces = migrateParagraphIndentSpaces(hasSavedWidth, savedWidth, extraParagraphSpacing != 0);
+  if (!hasSavedWidth || savedWidth < 0 || savedWidth > 5) needsResave = true;
+
   // Older files stored one combined touch mode under "touchReaderControls":
   // 0=off, 1=tap, 2=swipe, 3=inverted tap. Split it into the master toggle
   // plus the per-direction gesture pair (the generic loop above already folded
@@ -223,11 +234,16 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
+  // These controls use board-specific display-index mappings and are skipped by
+  // the generic settings loop. Persisted action IDs remain stable across boards.
+  longPressMenuFunction = clamp(doc["longPressMenuFunction"] | (uint8_t)LP_MENU_DISABLED,
+                                (uint8_t)(LP_MENU_CREATE_CLIPPING + 1), (uint8_t)LP_MENU_DISABLED);
+  shortPwrBtn = clamp(doc["shortPwrBtn"] | (uint8_t)IGNORE, (uint8_t)SHORT_PWRBTN_COUNT, (uint8_t)IGNORE);
   if (BoardConfig::hasHomeKey() && doc["homeButtonLongPressAction"].isNull() &&
       !doc["longPressMenuFunction"].isNull()) {
-    static constexpr HomeButtonAction LEGACY[] = {HomeButtonAction::Sync, HomeButtonAction::Ignore,
-                                                  HomeButtonAction::Bookmark, HomeButtonAction::Dictionary,
-                                                  HomeButtonAction::ReaderMenu};
+    static constexpr HomeButtonAction LEGACY[] = {HomeButtonAction::Sync,       HomeButtonAction::Ignore,
+                                                  HomeButtonAction::Bookmark,   HomeButtonAction::Dictionary,
+                                                  HomeButtonAction::ReaderMenu, HomeButtonAction::CreateClipping};
     if (s.longPressMenuFunction < sizeof(LEGACY) / sizeof(LEGACY[0])) {
       s.homeButtonLongPressAction = static_cast<uint8_t>(LEGACY[s.longPressMenuFunction]);
       needsResave = true;
@@ -248,7 +264,6 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   }
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
   copyToField(dictionaryName, doc["dictionaryName"] | "", sizeof(dictionaryName));
-
   // Language -- stored as code string for stability across enum reorders.
   if (doc["language"].is<const char*>()) {
     language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
@@ -293,6 +308,7 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   spec.characterSpacing = getCharacterSpacing();
   spec.wordSpacingPercent = wordSpacing;
   spec.extraParagraphSpacing = extraParagraphSpacing != 0;
+  spec.paragraphIndentSpaces = paragraphIndentSpaces;
   spec.paragraphAlignment = paragraphAlignment;
   spec.viewportWidth = viewportWidth;
   spec.viewportHeight = viewportHeight;
