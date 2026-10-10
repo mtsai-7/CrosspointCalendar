@@ -1,6 +1,6 @@
 # CrossPoint Reader
 
-> **This fork: CrossPoint Calendar.** The `calendar` branch turns the Xteink X3's
+> **This fork: CrossPoint Calendar.** This branch (`main`) turns the Xteink X3's
 > sleep screen into a self-updating agenda, synced over Bluetooth LE from an
 > Android phone. Wake the X3 and it is the normal CrossPoint reader. See
 > [CrossPoint Calendar](#crosspoint-calendar-this-fork) below; everything else in
@@ -132,6 +132,9 @@ pio run -e calhourly -t upload
 The protocol is specified in
 [`calendar/docs/ble-protocol.md`](calendar/docs/ble-protocol.md), with a
 Python reference codec in [`calendar/tools`](calendar/tools/xcal_protocol.py).
+
+Branches: `main` is the calendar firmware; `develop` mirrors upstream
+CrossPoint and is merged into `main` to pick up upstream changes.
 
 ## USB-locked devices (Xteink Unlocker)
 
