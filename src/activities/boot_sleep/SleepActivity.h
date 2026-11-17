@@ -5,6 +5,11 @@
 
 class Bitmap;
 class HalFile;
+class GfxRenderer;
+
+// Draws a parsed BMP the way the custom sleep screen does (placement,
+// grayscale passes, refresh). Also used for the calendar's pinned image.
+void renderSleepBitmap(GfxRenderer& renderer, const Bitmap& bitmap, bool preserveBackground = false);
 
 class SleepActivity final : public Activity {
  public:

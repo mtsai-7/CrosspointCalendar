@@ -61,9 +61,27 @@ class SnapshotStore(private val context: Context) {
     @Synchronized
     private fun rebuildNow(): Snapshot {
         val snap = build()
+        val prev = current
+        // Calendar sync and app restarts rebuild often with nothing changed. Only
+        // generatedUtc would differ, which changes the CRC and makes the X3
+        // re-download an identical agenda, so keep the previous snapshot then.
+        if (prev.day0 == snap.day0 && prev.zone == snap.zone && sameEvents(prev.payload, snap.payload)) {
+            Log.i(TAG, "Snapshot unchanged (crc=%08x)".format(prev.crc32))
+            return prev
+        }
         current = snap
         Log.i(TAG, "Snapshot day0=${snap.day0} events=${snap.eventCount} bytes=${snap.payload?.size} crc=%08x".format(snap.crc32))
         return snap
+    }
+
+    /** Payloads equal except for generatedUtc (bytes 1..4, spec §4.2). */
+    private fun sameEvents(a: ByteArray?, b: ByteArray?): Boolean {
+        if (a == null || b == null || a.size != b.size) return false
+        for (i in a.indices) {
+            if (i in 1..4) continue
+            if (a[i] != b[i]) return false
+        }
+        return true
     }
 
     private fun build(): Snapshot {
@@ -85,8 +103,8 @@ class SnapshotStore(private val context: Context) {
         }
     }
 
-    /** HEADER bytes for a new session pin (spec §4.1), sampled now. */
-    fun headerFor(snap: Snapshot): ByteArray {
+    /** HEADER bytes for a new session pin (spec §4.1), sampled now; [image] is the pinned image stream. */
+    fun headerFor(snap: Snapshot, image: ByteArray?): ByteArray {
         val now = Instant.now()
         val offsetMin = snap.zone.rules.getOffset(now).totalSeconds / 60
         return PayloadCodec.encodeHeader(
@@ -95,6 +113,7 @@ class SnapshotStore(private val context: Context) {
             utcOffsetMin = offsetMin,
             tzPosix = PosixTz.forZone(snap.zone, now),
             noCalendarPermission = snap.noCalendarPermission,
+            image = image,
         )
     }
 

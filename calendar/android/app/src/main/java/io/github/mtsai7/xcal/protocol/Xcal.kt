@@ -3,7 +3,7 @@ package io.github.mtsai7.xcal.protocol
 import java.util.Locale
 import java.util.UUID
 
-/** Constants of the XCAL BLE protocol v1 (docs/ble-protocol.md). */
+/** Constants of the XCAL BLE protocol v1.1 (docs/ble-protocol.md). */
 object Xcal {
     private fun uuid(short: Int): UUID =
         UUID.fromString(String.format(Locale.ROOT, "c588%04x-361f-49c4-9e41-fc31c01fab0c", short))
@@ -12,9 +12,11 @@ object Xcal {
     val HEADER: UUID = uuid(0x0002)
     val CHUNKS: List<UUID> = listOf(uuid(0x0010), uuid(0x0011), uuid(0x0012), uuid(0x0013))
     val STATUS: UUID = uuid(0x0020)
+    val IMAGE_OFFSET: UUID = uuid(0x0030)
+    val IMAGE_DATA: UUID = uuid(0x0031)
 
     const val PROTO_MAJOR = 1
-    const val PROTO_MINOR = 0
+    const val PROTO_MINOR = 1 // 1: pinned image (spec §4.4)
     const val PAYLOAD_VERSION = 1
     const val STATUS_VERSION = 1
 
@@ -34,6 +36,15 @@ object Xcal {
 
     const val HDR_PAYLOAD_VALID = 0x01
     const val HDR_NO_CALENDAR_PERMISSION = 0x02
+
+    /** HEADER imageFlags (v1.1). */
+    const val IMG_PINNED = 0x01
+
+    /** Pinned image (spec §4.4): the X3 screen, portrait. */
+    const val IMAGE_W = 528
+    const val IMAGE_H = 792
+    const val IMAGE_WINDOW = 512
+    const val MAX_IMAGE_BMP = 110_000
 
     const val EV_ALL_DAY = 0x01
     const val EV_TENTATIVE = 0x02

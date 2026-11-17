@@ -37,6 +37,11 @@ std::vector<calendar::AgendaEvent> all(const calendar::Agenda& agenda) {
 TEST(CalendarAgenda, ParsesBasicVector) {
   const auto data = hex(BASIC);
   EXPECT_EQ(0xc9f9fd8eu, calendar::crc32(data.data(), data.size()));
+  // Incremental CRC over arbitrary splits matches the one-shot value.
+  for (size_t split : {size_t{0}, size_t{1}, size_t{37}, data.size()}) {
+    const uint32_t head = calendar::crc32Update(0, data.data(), split);
+    EXPECT_EQ(0xc9f9fd8eu, calendar::crc32Update(head, data.data() + split, data.size() - split));
+  }
 
   calendar::Agenda agenda;
   ASSERT_TRUE(agenda.parse(data.data(), data.size()));

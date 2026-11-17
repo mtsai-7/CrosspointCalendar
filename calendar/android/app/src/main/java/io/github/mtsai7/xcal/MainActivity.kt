@@ -19,6 +19,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import io.github.mtsai7.xcal.image.PinnedImageStore
 import io.github.mtsai7.xcal.protocol.PosixTz
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -53,6 +54,12 @@ class MainActivity : Activity() {
             Prefs.setEnabled(this, false)
             XcalService.stop(this)
             refresh()
+        })
+        column.addView(button(R.string.btn_image) { startActivity(Intent(this, ImageActivity::class.java)) })
+        column.addView(button(R.string.btn_unpin) {
+            PinnedImageStore.clear(this)
+            refresh()
+            Toast.makeText(this, R.string.unpinned, Toast.LENGTH_SHORT).show()
         })
         column.addView(button(R.string.btn_battery) { requestBatteryExemption() })
         column.addView(button(R.string.btn_bluetooth_settings) {
@@ -141,6 +148,14 @@ class MainActivity : Activity() {
                 add(getString(R.string.st_agenda, snap.day0.toString(), snap.eventCount, snap.payload?.size ?: 0))
             }
             add(getString(R.string.st_last_session, lastSession?.let { time.format(it) } ?: "—"))
+            val pinned = PinnedImageStore.current(this@MainActivity)
+            add(
+                when {
+                    pinned == null -> getString(R.string.st_image_none)
+                    x3?.shownImageCrc32 == pinned.crc32 -> getString(R.string.st_image_shown)
+                    else -> getString(R.string.st_image_waiting)
+                } + (pinned?.expiresAt?.let { getString(R.string.st_image_expires, time.format(it)) } ?: ""),
+            )
             if (x3 != null) {
                 val battery = if (x3.batteryPercent <= 100) "${x3.batteryPercent}%" else "?"
                 add(getString(R.string.st_x3, battery, x3.wakeCount, x3.firmwareVersion))

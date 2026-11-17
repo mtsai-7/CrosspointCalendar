@@ -82,12 +82,14 @@ Base UUID `c588xxxx-361f-49c4-9e41-fc31c01fab0c`.
 | Name | UUID | Properties | Permission | Max length |
 |---|---|---|---|---|
 | XCAL service | `c5880001-361f-49c4-9e41-fc31c01fab0c` | primary service | — | — |
-| HEADER | `c5880002-361f-49c4-9e41-fc31c01fab0c` | Read | Read, encrypted + MITM | 65 B |
+| HEADER | `c5880002-361f-49c4-9e41-fc31c01fab0c` | Read | Read, encrypted + MITM | 74 B |
 | CHUNK0 | `c5880010-361f-49c4-9e41-fc31c01fab0c` | Read | Read, encrypted + MITM | 512 B |
 | CHUNK1 | `c5880011-361f-49c4-9e41-fc31c01fab0c` | Read | Read, encrypted + MITM | 512 B |
 | CHUNK2 | `c5880012-361f-49c4-9e41-fc31c01fab0c` | Read | Read, encrypted + MITM | 512 B |
 | CHUNK3 | `c5880013-361f-49c4-9e41-fc31c01fab0c` | Read | Read, encrypted + MITM | 512 B |
 | STATUS | `c5880020-361f-49c4-9e41-fc31c01fab0c` | Write (with response) | Write, encrypted + MITM | 64 B |
+| IMAGE_OFFSET | `c5880030-361f-49c4-9e41-fc31c01fab0c` | Write (with response) | Write, encrypted + MITM | 4 B |
+| IMAGE_DATA | `c5880031-361f-49c4-9e41-fc31c01fab0c` | Read | Read, encrypted + MITM | 512 B |
 
 - 512 B is the ATT maximum attribute value length, hence the fixed chunk
   characteristics: the **payload** (§4.2) is at most 4 × 512 = **2048 B** and is
@@ -99,6 +101,11 @@ Base UUID `c588xxxx-361f-49c4-9e41-fc31c01fab0c`.
 - STATUS writes may arrive as a single Write Request or as Prepare/Execute
   Write (long write) when the value exceeds MTU − 3; the phone must accept both.
   The X3 should keep STATUS ≤ MTU − 3 by shortening `fwVersion`.
+- IMAGE_DATA serves a 512 B window of the pinned image stream (§4.4)
+  starting at the offset last written to IMAGE_OFFSET on that connection
+  (uint32; 0 until written). Within the window, read offsets work as above.
+  The window scheme exists because an image (up to ~110 KB) exceeds the ATT
+  attribute limit.
 - The X3 discovers only the XCAL service by UUID (no full discovery, no GATT
   caching needed).
 - All multi-byte integers are **little-endian**. Strings are **UTF-8**, not
@@ -112,8 +119,8 @@ keep one session self-consistent:
   builds the header bytes **once** (including `nowUtc`) and **pins** that header
   and the current payload snapshot to the connection (keyed by
   `BluetoothDevice`).
-- All further HEADER (offset > 0) and CHUNKn reads on that connection are
-  served from the pinned snapshot. The pin is released on disconnect.
+- All further HEADER (offset > 0), CHUNKn and IMAGE_DATA reads on that
+  connection are served from the pinned snapshot (the pinned image included). The pin is released on disconnect.
 - A CHUNKn read before any HEADER read on a connection pins the current snapshot
   too (defensive; the X3 always reads HEADER first).
 
@@ -125,12 +132,12 @@ arrays and swaps the "current" reference atomically.
 
 ## 4. Data formats
 
-### 4.1 HEADER (17 + tzLen bytes, ≤ 65)
+### 4.1 HEADER (26 + tzLen bytes, ≤ 74; 17 + tzLen in v1.0)
 
 | Off | Size | Field | Notes |
 |---|---|---|---|
 | 0 | 1 | `protoMajor` | `1`. X3 rejects any other major version. |
-| 1 | 1 | `protoMinor` | `0`. Minor bumps are backward compatible (fields only appended). |
+| 1 | 1 | `protoMinor` | `1` (`0` before pinned images). Minor bumps are backward compatible (fields only appended). |
 | 2 | 1 | `flags` | bit0 `PAYLOAD_VALID`, bit1 `NO_CALENDAR_PERMISSION`, bits 2–7 reserved (0; ignore on read) |
 | 3 | 1 | `chunkCount` | 0..4 = ceil(payloadLen / 512) |
 | 4 | 2 | `payloadLen` | 0..2048 |
@@ -139,6 +146,9 @@ arrays and swaps the "current" reference atomically.
 | 14 | 2 | `utcOffsetMin` | int16, phone's current UTC offset in minutes (e.g. −420 for PDT) |
 | 16 | 1 | `tzLen` | 0..48; 0 = no timezone rule supplied |
 | 17 | tzLen | `tzPosix` | ASCII POSIX TZ rule for the phone's zone (§6) |
+| 17+tzLen | 1 | `imageFlags` | *v1.1.* bit0 `IMAGE_PINNED`: the phone wants §4.4's image shown instead of the agenda; rest reserved |
+| 18+tzLen | 4 | `imageLen` | *v1.1.* length of the image stream (§4.4); 0 when not pinned |
+| 22+tzLen | 4 | `imageCrc32` | *v1.1.* CRC-32 over the image stream (identifies the image); 0 when not pinned |
 
 `PAYLOAD_VALID` is clear when the phone has no agenda to offer (e.g. calendar
 permission missing); `chunkCount`/`payloadLen`/`payloadCrc32` are then 0 and the
@@ -189,10 +199,23 @@ Rules (phone):
      Drop (remove, not replace) emoji and pictographic symbols the X3 cannot
      draw: U+200D, U+20E3, U+FE00–U+FE0F, U+E0020–U+E007F (sequence glue),
      U+2190–U+21FF, U+2300–U+23FF, U+25A0–U+27BF, U+2900–U+297F,
-     U+2B00–U+2BFF and U+1F000–U+1FAFF.
+     U+2B00–U+2BFF and U+1F000–U+1FAFF. Also drop decoration-only combining
+     marks: U+0305, U+0332–U+0338, U+033F, U+0488–U+0489, U+1AB0–U+1AFF,
+     U+20D0–U+20F0, U+FE20–U+FE2F (strike-through, underline, swirls).
   2. Split on runs of **Unicode White_Space** characters — exactly U+0009–U+000D,
      U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F,
      U+205F, U+3000 — drop empty pieces, join with a single U+0020.
+  2a. Decode fancy-text lookalikes. A character is *drawable* if it is in the
+     X3's title/location fonts (`DRAWABLE_RANGES` in the script: the
+     intersection of NotoSans 11 regular/bold and Ubuntu 12). If every
+     undrawable character of the text is a key of `FLIPPED`, reverse the text
+     (by code point) and map `FLIPPED`, then `FLIPPED_ASCII` (upside-down text).
+     Otherwise, if every undrawable character is a key of `LOOKALIKES`, map
+     each character through `LOOKALIKES` (some keys map to nothing:
+     decorative brackets). Otherwise leave the text unchanged, so genuine
+     Greek, Thai, CJK… text is never rewritten. Finally drop empty pieces
+     between single spaces again. The tables are part of the spec; both
+     implementations must use identical copies.
   3. UTF-8 encode and truncate to the byte limit **on a code-point boundary**
      (title 64 B, location 48 B). Empty location ⇒ `HAS_LOCATION` clear.
 - Order: by `startMin` ascending; on ties all-day before timed; then `endMin`
@@ -215,7 +238,7 @@ Rules (X3):
 - If `omittedCount > 0`, show "+N more" after the last event that fits.
 - Untitled events (`titleLen == 0`) get a translated placeholder on the X3.
 
-### 4.3 STATUS (written by X3, 10 + fwLen bytes, ≤ 64)
+### 4.3 STATUS (written by X3, 18 + fwLen bytes, ≤ 64; 10 + fwLen in v1.0)
 
 | Off | Size | Field | Notes |
 |---|---|---|---|
@@ -224,11 +247,38 @@ Rules (X3):
 | 2 | 4 | `shownCrc32` | CRC of the payload the X3 is displaying (0 = none) |
 | 6 | 2 | `wakeCount` | timer wakes since the X3's last power-on (saturating) |
 | 8 | 1 | `flags` | bit0 `CLOCK_ADJUSTED` (this sync corrected the RTC), bit1 `TZ_APPLIED`, rest reserved |
-| 9 | 1 | `fwLen` | 0..54 |
+| 9 | 1 | `fwLen` | 0..46 (0..54 in v1.0) |
 | 10 | fwLen | `fwVersion` | ASCII firmware version string |
+| 10+fwLen | 4 | `shownImageCrc32` | *v1.1.* `imageCrc32` of the image the X3 is showing; 0 = the agenda is shown |
+| 14+fwLen | 4 | `dismissedImageCrc32` | *v1.1.* `imageCrc32` of an image the user dismissed on the X3; 0 = none |
 
 The phone shows battery / last sync in its notification. Writes with an unknown
-`statusVersion` are acknowledged and ignored.
+`statusVersion` are acknowledged and ignored. When `dismissedImageCrc32` equals
+the pinned image's CRC, the phone unpins it (the user chose the agenda on the
+X3). A v1.0 STATUS (no image fields) leaves the pin alone.
+
+### 4.4 Pinned image (v1.1)
+
+The phone can pin one full-screen image (e.g. a boarding pass) that the X3
+shows on its sleep screen instead of the agenda until it is unpinned. The X3
+keeps syncing the agenda hourly underneath, so unpinning shows a current
+agenda at once.
+
+- **Image stream** (`imageLen` bytes, served by IMAGE_DATA): a zlib stream
+  (RFC 1950: deflate with zlib header and Adler-32) of a **BMP file**:
+  `BITMAPINFOHEADER`, `BI_RGB`, bottom-up rows padded to 4 bytes, exactly
+  **528 × 792** pixels (the X3 screen, portrait), and either
+  - 1 bpp, palette [black, white] — sharp black and white (text, codes), or
+  - 2 bpp, palette [0, 85, 170, 255] gray — the X3's four native gray levels
+    (photos, dithered by the phone).
+  The decompressed BMP is at most 110 000 bytes (2 bpp: 104 614; 1 bpp: 53 918).
+- `imageCrc32` (CRC-32/ISO-HDLC over the zlib stream) identifies the image; the
+  X3 only downloads an image whose CRC differs from the one it holds.
+- **Unpinning**: the phone clears `IMAGE_PINNED` (the user's "Show calendar",
+  or the pin's optional expiry on the phone). The user can also dismiss the
+  image on the X3 itself; the X3 then ignores that CRC and reports it in
+  STATUS `dismissedImageCrc32` so the phone unpins it. Pinning a new image
+  (new CRC) shows it even after a dismissal.
 
 ## 5. Security and pairing
 
@@ -297,9 +347,17 @@ The phone shows battery / last sync in its notification. Writes with an unknown
 6. On a CRC/length/parse failure: re-read HEADER once (re-pins, §3.1) and
    repeat step 5; if it fails again keep the previous cache (never apply a
    partial payload).
+6a. Pinned image (v1.1 HEADER): if `IMAGE_PINNED` is clear, delete any stored
+   image. If set and `imageCrc32` is neither the stored image's nor the
+   dismissed one, download it: for each 512 B window write IMAGE_OFFSET, read
+   IMAGE_DATA; inflate as it arrives to a temporary SD file; verify `imageLen`,
+   the CRC, and the BMP (§4.4); then replace the stored image. A failed
+   download keeps the previous state.
 7. Write STATUS.
 8. Disconnect; deinit NimBLE to release its heap.
-9. Render from cache (updates the "now" marker even when nothing changed),
+9. Render the pinned image if one is stored and not dismissed (skipping the
+   display refresh when that same image is already on screen), otherwise
+   render the agenda from cache (updates the "now" marker even when nothing changed),
    show "synced HH:MM" of the last successful sync, deep-sleep to next `:55:05`.
 
 Failures (no phone found, security failure, timeout, bad CRC): render from
@@ -316,6 +374,11 @@ cache, mark stale, retry **once** 5 min later; after that, back to hourly.
 - Build cost is a single `CalendarContract.Instances` query for the window
   (±1 day margin, filtered in code).
 - Advertising restarts automatically if Bluetooth is toggled.
+- Pinned image (§4.4): set by sharing an image to the app (or picking one in
+  it); the app converts it to the §4.4 BMP (fitted to 528 × 792, rotated to
+  portrait when landscape; 1 bpp thresholded or 2 bpp dithered) and keeps it
+  with an optional expiry. "Show calendar" unpins; an expired pin reads as
+  unpinned.
 
 ## 9. Size and power budget
 
@@ -334,6 +397,9 @@ cache, mark stale, retry **once** 5 min later; after that, back to hourly.
 - `protoMajor` changes on incompatible changes to the GATT layout, HEADER, or
   security model. `protoMinor` changes add fields to the end of HEADER/STATUS;
   readers must ignore unknown trailing bytes.
+- v1.1 (2026-11): pinned image — HEADER `imageFlags`/`imageLen`/`imageCrc32`,
+  STATUS `shownImageCrc32`/`dismissedImageCrc32`, IMAGE_OFFSET/IMAGE_DATA.
+  A v1.0 X3 ignores the image fields and characteristics.
 - `payloadVersion` versions the PAYLOAD encoding independently.
 
 ## 11. Risks and hardware verification (ranked)
@@ -361,18 +427,29 @@ self-tests). Implementations must reproduce these bytes exactly. Inputs are in
 `tzPosix` = `STD8DST,M3.2.0,M11.1.0`.
 
 ```
-basic.header    0100010184008efdf9c960c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30
+basic.header    0101010184008efdf9c960c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30
+                000000000000000000
 basic.payload   01f061bb6af5500205000088ff3c00114c617465206e69676874206465706c6f79010000a0050f
                 4d61726b2773206269727468646179041c023a02075374616e647570045a6f6f6d060c03480317
                 44656e7469737420e280942044722e204dc3bc6c6c65720b313233204d61696e20537400f80734
                 080d546f6d6f72726f773a20313a31
 basic.crc32     c9f9fd8e
 trunc.payload   01f061bb6af55002010000580294023fe69c83…(21 × e69c83)   title cut at 63 B
-overflow.header 01000104f8070088644460c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30
+overflow.header 01010104f8070088644460c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30
+                000000000000000000
 overflow        40 events → 29 included, omittedCount 11, payloadLen 2040, crc32 44648800
-noperm.header   0100020000000000000060c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30
+noperm.header   0101020000000000000060c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30
+                000000000000000000
 status          01578efdf9c90c00011b312e362e352d6465762d63616c656e6461722d3933653938626237
+                0000000000000000
+image1.bmp      vector_image_bmp(1): 53918 B, crc32 64d1bd7d
+image2.bmp      vector_image_bmp(2): 104614 B, crc32 b4cfd680
 ```
+
+v1.1 headers end in the 9 image bytes (`imageFlags`, `imageLen`,
+`imageCrc32`; zero when nothing is pinned); STATUS ends in the 8 image CRC
+bytes. The image vectors pin the BMP layout (§4.4); the zlib stream itself
+is not a vector, because deflate output may differ between zlib builds.
 
 Text-rule cases (`SANITIZE_CASES` in the script) cover NBSP, zero-width space
 (kept), CR/LF, NUL/DEL, U+3000 and U+0085.

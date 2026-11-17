@@ -9,7 +9,8 @@ class GfxRenderer;
 // (MIT).
 namespace CalendarSleep {
 
-// Draws the calendar sleep screen and refreshes the panel.
+// Draws the calendar sleep screen (or the pinned image, CalendarImage) and
+// refreshes the panel.
 void render(GfxRenderer& renderer);
 
 // Delay before the sync wake that follows the user putting the X3 to sleep

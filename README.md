@@ -74,8 +74,8 @@ Built and tested on the Xteink X3; reader features are unchanged.
 ### What it shows
 
 - Today's date, then each event: start time over an indented end time,
-  title (tentative events in regular weight) and location. Events that
-  ended more than an hour ago drop off.
+  title (tentative events in regular weight) and location. Events drop
+  off once they have ended; long events stay while they are running.
 - Tomorrow's events below a separator with tomorrow's date, as space allows;
   "+N more" when the day doesn't fit.
 - A footer: when the agenda was last updated (and why the last sync failed,
@@ -83,6 +83,17 @@ Built and tested on the Xteink X3; reader features are unchanged.
 - **Settings → Display → Calendar Colors**: Light (black on white) or Dark
   (white on black). The calendar is the default **Sleep Screen**; choose it
   there if you changed it.
+
+### Pinned image
+
+Share any picture (a boarding pass, a ticket, a note) to **Show on X3** from
+the phone, or pick one in the app. The phone converts it to the X3's screen
+(black & white for text and codes, or four grays for photos; landscape images
+are rotated) and the X3 shows it on its sleep screen after the next sync,
+instead of the agenda. The agenda keeps syncing underneath. To bring the
+calendar back, tap **Show calendar** in the app, let the optional expiry
+(12/24/48 h) run out, or choose **Settings → Display → Show Calendar Instead
+of Image** on the X3.
 
 ### How it syncs
 
@@ -107,8 +118,9 @@ reads today's and tomorrow's events from the phone's calendars and serves them
 to the X3 (Android 12+). It runs in whichever profile it is installed in, so
 installing it only in a work profile shows only work calendars. It can hide
 recurring all-day noise (e.g. a working-location event) by title, and it
-cleans titles for the X3's fonts: styled "fancy text" letters become plain
-letters, emoji are dropped.
+cleans titles for the X3's fonts: styled "fancy text" letters (including
+upside-down and lookalike-letter styles) become plain letters, emoji are
+dropped.
 
 ### Pairing
 

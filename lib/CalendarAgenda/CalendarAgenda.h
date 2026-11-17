@@ -100,5 +100,8 @@ int32_t daysFromCivil(int year, unsigned month, unsigned day);
 
 // CRC-32/ISO-HDLC (zlib, java.util.zip.CRC32).
 uint32_t crc32(const uint8_t* data, size_t len);
+// Continues a CRC-32 over more data: crc32Update(crc32(a), b) == crc32(a + b)
+// (zlib's crc32(crc, buf, len)); start from 0.
+uint32_t crc32Update(uint32_t crc, const uint8_t* data, size_t len);
 
 }  // namespace calendar

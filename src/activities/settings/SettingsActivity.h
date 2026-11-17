@@ -30,6 +30,7 @@ enum class SettingAction {
   KeyboardLayouts,
   HomeButton,
   About,
+  ShowCalendar,  // dismiss the calendar's pinned image (CalendarImage)
 };
 
 struct SettingInfo {

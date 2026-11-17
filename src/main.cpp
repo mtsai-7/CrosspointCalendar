@@ -22,6 +22,7 @@
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
 
 #include <cstring>
 
@@ -73,6 +74,44 @@ constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 // A wake hold must never become an in-app power-button action.  Boot may continue
 // while the button is held; swallow the one release that ends that wake gesture.
 static bool wakePowerReleasePending = false;
+
+// Calendar wakes run without the UI, so a power-button press during one (a
+// sync, an image download) would otherwise be lost. A timer latches any press;
+// the wake then restarts into the reader, flagged here so that boot behaves
+// like a power-button wake. RTC_NOINIT, not RTC_DATA: esp_restart() re-inits
+// RTC_DATA variables; noinit ones survive (garbage at power-on, hence the magic).
+constexpr uint32_t CALENDAR_BUTTON_WAKE_MAGIC = 0x58434257;  // "XCBW"
+RTC_NOINIT_ATTR static uint32_t calendarButtonWakeMagic;
+static volatile bool calendarPowerPressed = false;
+static volatile uint8_t calendarPowerSamples = 0;
+static esp_timer_handle_t calendarButtonTimer = nullptr;
+
+static void pollCalendarPowerButton(void*) {
+  // Two consecutive 20 ms samples: a deliberate press, not contact noise.
+  calendarPowerSamples = gpio.isPowerButtonPhysicallyPressed() ? calendarPowerSamples + 1 : 0;
+  if (calendarPowerSamples >= 2) calendarPowerPressed = true;
+}
+
+static void watchCalendarPowerButton() {
+  const esp_timer_create_args_t args = {.callback = &pollCalendarPowerButton,
+                                        .arg = nullptr,
+                                        .dispatch_method = ESP_TIMER_TASK,
+                                        .name = "cal-btn",
+                                        .skip_unhandled_events = true};
+  if (esp_timer_create(&args, &calendarButtonTimer) == ESP_OK) esp_timer_start_periodic(calendarButtonTimer, 20000);
+}
+
+// Restarts into the reader when the power button was pressed during this
+// calendar wake; returns otherwise.
+static void restartIntoReaderIfPressed(const char* stage) {
+  if (!calendarPowerPressed) return;
+  LOG_INF("MAIN", "Power button pressed during the calendar wake (%s); restarting into the reader", stage);
+  if (calendarButtonTimer) esp_timer_stop(calendarButtonTimer);
+  calendarButtonWakeMagic = CALENDAR_BUTTON_WAKE_MAGIC;
+  display.deepSleep();
+  Storage.prepareForDeepSleep();
+  esp_restart();
+}
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -520,7 +559,16 @@ void setup() {
   HalSystem::checkPanic();
 
   APP_STATE.loadFromFile();
-  const bool isSleepWake = wakeupReason == HalGPIO::WakeupReason::PowerButton;
+  // A power-button press during a calendar wake restarted into here: treat it
+  // like the power-button wake it stood for (resume without the splash, and
+  // swallow the button's release).
+  const bool calendarButtonWake = calendarButtonWakeMagic == CALENDAR_BUTTON_WAKE_MAGIC;
+  calendarButtonWakeMagic = 0;
+  if (calendarButtonWake) {
+    LOG_INF("MAIN", "Woken by the power button during a calendar wake");
+    wakePowerReleasePending = true;
+  }
+  const bool isSleepWake = wakeupReason == HalGPIO::WakeupReason::PowerButton || calendarButtonWake;
   const bool isPersistedSleepWake = isSleepWake && !APP_STATE.showBootScreen;
 
   if (recoveryFirmwareMode) {
@@ -603,8 +651,13 @@ void setup() {
       CalendarSleep::noteTimerWake();
       // Boot applied the Settings timezone; the phone's rule (if any) wins.
       CalendarBle::restoreTimezone();
+      watchCalendarPowerButton();
       if (!bleWatchdogRestart) CalendarBle::run(renderer);
+      // A press during the sync: the reader repaints the screen anyway.
+      restartIntoReaderIfPressed("sync");
       CalendarSleep::render(renderer);
+      restartIntoReaderIfPressed("redraw");
+      if (calendarButtonTimer) esp_timer_stop(calendarButtonTimer);
     }
     halTiltSensor.deepSleep();
     display.deepSleep();

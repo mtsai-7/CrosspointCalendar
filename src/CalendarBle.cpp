@@ -22,6 +22,7 @@
 #include <cstring>
 
 #include "CalendarCache.h"
+#include "CalendarImage.h"
 #include "fontIds.h"
 
 // Arduino's esp32-hal-bt.c defines this flag (and reclaims controller RAM at
@@ -42,6 +43,8 @@ const char* const HEADER_UUID = "c5880002-361f-49c4-9e41-fc31c01fab0c";
 const char* const CHUNK_UUIDS[4] = {"c5880010-361f-49c4-9e41-fc31c01fab0c", "c5880011-361f-49c4-9e41-fc31c01fab0c",
                                     "c5880012-361f-49c4-9e41-fc31c01fab0c", "c5880013-361f-49c4-9e41-fc31c01fab0c"};
 const char* const STATUS_UUID = "c5880020-361f-49c4-9e41-fc31c01fab0c";
+const char* const IMAGE_OFFSET_UUID = "c5880030-361f-49c4-9e41-fc31c01fab0c";
+const char* const IMAGE_DATA_UUID = "c5880031-361f-49c4-9e41-fc31c01fab0c";
 
 constexpr uint8_t PROTO_MAJOR = 1;
 constexpr size_t HEADER_FIXED_LEN = 17;
@@ -49,6 +52,9 @@ constexpr size_t MAX_TZ_LEN = 48;
 constexpr size_t CHUNK_SIZE = 512;
 constexpr size_t MAX_PAYLOAD = 4 * CHUNK_SIZE;
 constexpr uint8_t HDR_PAYLOAD_VALID = 0x01;
+constexpr uint8_t IMG_PINNED = 0x01;          // HEADER imageFlags (v1.1)
+constexpr size_t HEADER_IMAGE_LEN = 9;         // imageFlags, imageLen, imageCrc32 after tzPosix
+constexpr size_t MAX_STATUS_FW = 46;           // keeps STATUS <= 64 B with the v1.1 image fields
 constexpr uint8_t ST_CLOCK_ADJUSTED = 0x01;
 constexpr uint8_t ST_TZ_APPLIED = 0x02;
 
@@ -72,6 +78,8 @@ constexpr uint32_t PEER_ENCRYPT_WAIT_MS = 2000;
 // (2 s) + reads, plus the retry delays.
 constexpr uint64_t WATCHDOG_SYNC_US = 100ULL * 1000 * 1000;
 constexpr uint64_t WATCHDOG_PAIRING_US = 90ULL * 1000 * 1000;
+// A pinned-image download (~5-100 KB at a few KB/s) gets its own budget.
+constexpr uint64_t WATCHDOG_IMAGE_US = 120ULL * 1000 * 1000;
 constexpr uint32_t WATCHDOG_MAGIC = 0x58434C57;  // "XCLW"
 constexpr int32_t CLOCK_TOLERANCE_S = 2;         // spec §6
 
@@ -83,8 +91,10 @@ RTC_DATA_ATTR uint32_t shownCrc;
 // the SD cache keeps the time its payload was stored as a fallback).
 RTC_DATA_ATTR uint32_t lastSyncUtc;
 RTC_DATA_ATTR uint16_t syncCount;
-// Set just before a watchdog restart; RTC slow memory survives esp_restart().
-RTC_DATA_ATTR uint32_t watchdogMagic;
+// Set just before a watchdog restart. RTC_NOINIT, not RTC_DATA: esp_restart()
+// re-inits RTC_DATA variables; noinit ones survive (garbage at power-on, hence
+// the magic value).
+RTC_NOINIT_ATTR uint32_t watchdogMagic;
 
 esp_timer_handle_t watchdogTimer = nullptr;
 
@@ -232,6 +242,47 @@ void renderPairingScreen(GfxRenderer& r, uint32_t code) {
 
 // Reads HEADER (+ chunks when the payload changed), applies time and timezone,
 // writes STATUS. Assumes an encrypted link. Fills everything but duration/at.
+// CalendarImage::FetchFn over IMAGE_OFFSET / IMAGE_DATA (spec §3).
+struct ImageFetch {
+  NimBLERemoteCharacteristic* offsetChr;
+  NimBLERemoteCharacteristic* dataChr;
+};
+
+size_t fetchImageWindow(void* ctx, const uint32_t offset, uint8_t* out, const size_t max) {
+  auto* f = static_cast<ImageFetch*>(ctx);
+  const uint8_t off[4] = {static_cast<uint8_t>(offset), static_cast<uint8_t>(offset >> 8),
+                          static_cast<uint8_t>(offset >> 16), static_cast<uint8_t>(offset >> 24)};
+  if (!f->offsetChr->writeValue(off, sizeof(off), true)) return 0;
+  const NimBLEAttValue v = f->dataChr->readValue();
+  const size_t n = std::min<size_t>(v.size(), max);
+  memcpy(out, v.data(), n);
+  return n;
+}
+
+// Pinned image (spec §7 step 6a); a failure only logs, the agenda sync stands.
+void syncImage(NimBLEClient* client, NimBLERemoteService* svc, const uint8_t imageFlags, const uint32_t imageLen,
+               const uint32_t imageCrc) {
+  if (!(imageFlags & IMG_PINNED)) {
+    if (CalendarImage::storedCrc() != 0 || CalendarImage::dismissedCrc() != 0) CalendarImage::unpin();
+    return;
+  }
+  if (imageCrc == CalendarImage::storedCrc() || imageCrc == CalendarImage::dismissedCrc()) return;
+  ImageFetch fetch{svc->getCharacteristic(NimBLEUUID(IMAGE_OFFSET_UUID)),
+                   svc->getCharacteristic(NimBLEUUID(IMAGE_DATA_UUID))};
+  if (!fetch.offsetChr || !fetch.dataChr) {
+    LOG_ERR("BLE", "Phone pins an image but lacks the image characteristics");
+    return;
+  }
+  disarmWatchdog();
+  armWatchdog(WATCHDOG_IMAGE_US);
+  // Shorter connection intervals speed up the window-by-window reads.
+  client->updateConnParams(6, 12, 0, 200);
+  const uint32_t start = millis();
+  const bool ok = CalendarImage::download(imageLen, imageCrc, &fetchImageWindow, &fetch);
+  LOG_INF("BLE", "Image %08lx: %s, %lu bytes in %lums", static_cast<unsigned long>(imageCrc), ok ? "stored" : "failed",
+          static_cast<unsigned long>(imageLen), static_cast<unsigned long>(millis() - start));
+}
+
 void syncSession(NimBLEClient* client, Status& st) {
   NimBLERemoteService* svc = client->getService(NimBLEUUID(SERVICE_UUID));
   if (!svc) {
@@ -264,6 +315,12 @@ void syncSession(NimBLEClient* client, Status& st) {
   st.payloadLen = payloadLen;
   st.payloadCrc = payloadCrc;
   uint8_t statusFlags = 0;
+  // v1.1 image fields follow tzPosix; a v1.0 phone sends none.
+  const bool hasImageFields = hdr.size() >= HEADER_FIXED_LEN + tzLen + HEADER_IMAGE_LEN;
+  const uint8_t* img = h + HEADER_FIXED_LEN + tzLen;
+  const uint8_t imageFlags = hasImageFields ? img[0] : 0;
+  const uint32_t imageLen = hasImageFields ? rd32(img + 1) : 0;
+  const uint32_t imageCrc = hasImageFields ? rd32(img + 5) : 0;
 
   // Time (spec §6): correct the DS3231 when it is off by more than 2 s.
   time_t rtcNow = 0;
@@ -322,13 +379,15 @@ void syncSession(NimBLEClient* client, Status& st) {
   }
   lastSyncUtc = nowUtc;
 
+  if (hasImageFields) syncImage(client, svc, imageFlags, imageLen, imageCrc);
+
   // STATUS write-back (spec §4.3), kept within one ATT write at MTU 247.
   NimBLERemoteCharacteristic* statusChr = svc->getCharacteristic(NimBLEUUID(STATUS_UUID));
   if (statusChr) {
     uint8_t buf[64];
     const char* fw = CROSSPOINT_VERSION;
     const size_t mtuRoom = client->getMTU() > 13 ? client->getMTU() - 3 : 10;
-    const size_t fwLen = std::min(strlen(fw), std::min<size_t>(54, mtuRoom - 10));
+    const size_t fwLen = std::min(strlen(fw), std::min<size_t>(MAX_STATUS_FW, mtuRoom - 18));
     const uint16_t battery = powerManager.getBatteryPercentage();
     const uint16_t wakes = syncCount;
     buf[0] = 1;
@@ -342,7 +401,14 @@ void syncSession(NimBLEClient* client, Status& st) {
     buf[8] = statusFlags;
     buf[9] = static_cast<uint8_t>(fwLen);
     memcpy(buf + 10, fw, fwLen);
-    if (!statusChr->writeValue(buf, 10 + fwLen, true)) LOG_ERR("BLE", "STATUS write failed");
+    // v1.1: which pinned image is on screen, and which one the user dismissed.
+    const uint32_t shownImage = CalendarImage::active() ? CalendarImage::storedCrc() : 0;
+    const uint32_t dismissedImage = CalendarImage::dismissedCrc();
+    for (int i = 0; i < 4; i++) {
+      buf[10 + fwLen + i] = (shownImage >> (8 * i)) & 0xFF;
+      buf[14 + fwLen + i] = (dismissedImage >> (8 * i)) & 0xFF;
+    }
+    if (!statusChr->writeValue(buf, 18 + fwLen, true)) LOG_ERR("BLE", "STATUS write failed");
   }
   st.result = Result::Ok;
 }

@@ -24,6 +24,10 @@ data class StatusReport(
     val wakeCount: Int,
     val flags: Int,
     val firmwareVersion: String,
+    /** v1.1: CRC of the pinned image the X3 shows (0 = agenda). */
+    val shownImageCrc32: Long = 0,
+    /** v1.1: CRC of a pinned image the user dismissed on the X3 (0 = none). */
+    val dismissedImageCrc32: Long = 0,
 )
 
 object PayloadCodec {
@@ -94,6 +98,7 @@ object PayloadCodec {
         utcOffsetMin: Int,
         tzPosix: String,
         noCalendarPermission: Boolean,
+        image: ByteArray? = null,
     ): ByteArray {
         val tz = tzPosix.toByteArray(Charsets.US_ASCII)
         require(tz.size <= Xcal.MAX_TZ_LEN) { "tz too long" }
@@ -108,7 +113,7 @@ object PayloadCodec {
             crc = crc32(payload)
             chunks = (len + Xcal.CHUNK_SIZE - 1) / Xcal.CHUNK_SIZE
         }
-        val buf = ByteBuffer.allocate(Xcal.HEADER_FIXED_LEN + tz.size).order(ByteOrder.LITTLE_ENDIAN)
+        val buf = ByteBuffer.allocate(Xcal.HEADER_FIXED_LEN + tz.size + 9).order(ByteOrder.LITTLE_ENDIAN)
         buf.put(Xcal.PROTO_MAJOR.toByte())
         buf.put(Xcal.PROTO_MINOR.toByte())
         buf.put(flags.toByte())
@@ -119,6 +124,10 @@ object PayloadCodec {
         buf.putShort(utcOffsetMin.toShort())
         buf.put(tz.size.toByte())
         buf.put(tz)
+        // v1.1 image fields (spec §4.1): zero when nothing is pinned.
+        buf.put((if (image != null) Xcal.IMG_PINNED else 0).toByte())
+        buf.putInt(image?.size ?: 0)
+        buf.putInt(if (image != null) crc32(image).toInt() else 0)
         return buf.array()
     }
 
@@ -142,6 +151,11 @@ object PayloadCodec {
         val fwLen = buf.get().toInt() and 0xFF
         if (10 + fwLen > data.size) return null
         val fw = String(data, 10, fwLen, Charsets.US_ASCII)
-        return StatusReport(battery, crc, wakes, flags, fw)
+        // v1.1 image fields; a v1.0 STATUS ends after fwVersion.
+        if (data.size < 18 + fwLen) return StatusReport(battery, crc, wakes, flags, fw)
+        buf.position(10 + fwLen)
+        val shownImage = buf.int.toLong() and 0xFFFFFFFFL
+        val dismissedImage = buf.int.toLong() and 0xFFFFFFFFL
+        return StatusReport(battery, crc, wakes, flags, fw, shownImage, dismissedImage)
     }
 }

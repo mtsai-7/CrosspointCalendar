@@ -15,6 +15,8 @@ import android.bluetooth.le.AdvertiseSettings
 import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
+import io.github.mtsai7.xcal.image.PinnedImageStore
+import io.github.mtsai7.xcal.image.XcalBitmap
 import io.github.mtsai7.xcal.protocol.PayloadCodec
 import io.github.mtsai7.xcal.protocol.StatusReport
 import io.github.mtsai7.xcal.protocol.Xcal
@@ -38,8 +40,12 @@ class XcalGattServer(
         fun onAdvertisingChanged(active: Boolean, error: String?)
     }
 
-    /** Header + payload pinned to one connection (spec §3.1). */
-    private class Pin(val header: ByteArray, val snapshot: Snapshot)
+    /** Header + payload + pinned image, pinned to one connection (spec §3.1). */
+    private class Pin(val header: ByteArray, val snapshot: Snapshot, val image: ByteArray?) {
+        /** IMAGE_OFFSET as last written on this connection (spec §3). */
+        @Volatile
+        var imageOffset = 0L
+    }
 
     private val manager = context.getSystemService(BluetoothManager::class.java)
     private val pins = ConcurrentHashMap<String, Pin>()
@@ -92,13 +98,14 @@ class XcalGattServer(
         )
         service.addCharacteristic(readOnly(Xcal.HEADER))
         Xcal.CHUNKS.forEach { service.addCharacteristic(readOnly(it)) }
-        service.addCharacteristic(
-            BluetoothGattCharacteristic(
-                Xcal.STATUS,
-                BluetoothGattCharacteristic.PROPERTY_WRITE,
-                BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED_MITM,
-            ),
+        fun writeOnly(uuid: java.util.UUID) = BluetoothGattCharacteristic(
+            uuid,
+            BluetoothGattCharacteristic.PROPERTY_WRITE,
+            BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED_MITM,
         )
+        service.addCharacteristic(writeOnly(Xcal.STATUS))
+        service.addCharacteristic(writeOnly(Xcal.IMAGE_OFFSET))
+        service.addCharacteristic(readOnly(Xcal.IMAGE_DATA))
         return service
     }
 
@@ -184,6 +191,10 @@ class XcalGattServer(
                     val pin = pins[device.address] ?: newPin(device)
                     PayloadCodec.chunk(pin.snapshot.payload, Xcal.CHUNKS.indexOf(uuid))
                 }
+                uuid == Xcal.IMAGE_DATA -> {
+                    val pin = pins[device.address] ?: newPin(device)
+                    pin.image?.let { XcalBitmap.window(it, pin.imageOffset) } ?: ByteArray(0)
+                }
                 else -> null
             }
             if (value == null) {
@@ -206,7 +217,18 @@ class XcalGattServer(
         ) {
             val data = value ?: ByteArray(0)
             var status = BluetoothGatt.GATT_SUCCESS
-            if (characteristic.uuid != Xcal.STATUS) {
+            if (characteristic.uuid == Xcal.IMAGE_OFFSET) {
+                // A 4-byte offset into the pinned image stream (spec §3).
+                if (preparedWrite || offset != 0) {
+                    status = BluetoothGatt.GATT_INVALID_OFFSET
+                } else if (data.size != 4) {
+                    status = BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH
+                } else {
+                    val pin = pins[device.address] ?: newPin(device)
+                    pin.imageOffset = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+                        .toLong() and 0xFFFFFFFFL
+                }
+            } else if (characteristic.uuid != Xcal.STATUS) {
                 status = BluetoothGatt.GATT_WRITE_NOT_PERMITTED
             } else if (preparedWrite) {
                 // Long write (spec §3): assemble until onExecuteWrite.
@@ -235,7 +257,8 @@ class XcalGattServer(
 
     private fun newPin(device: BluetoothDevice): Pin {
         val snapshot = store.ensureFresh()
-        val pin = Pin(store.headerFor(snapshot), snapshot)
+        val image = PinnedImageStore.current(context)?.stream
+        val pin = Pin(store.headerFor(snapshot, image), snapshot, image)
         pins[device.address] = pin
         listener.onSessionServed(device.address, snapshot)
         return pin

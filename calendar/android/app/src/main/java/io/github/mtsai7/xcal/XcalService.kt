@@ -18,6 +18,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.provider.CalendarContract
 import android.util.Log
+import io.github.mtsai7.xcal.image.PinnedImageStore
 import io.github.mtsai7.xcal.protocol.StatusReport
 import java.time.Instant
 import java.time.ZoneId
@@ -140,6 +141,9 @@ class XcalService : Service(), XcalGattServer.Listener {
     override fun onStatus(device: String, status: StatusReport) {
         XcalState.lastStatus = status
         XcalState.lastStatusAt = Instant.now()
+        // The user chose the agenda on the X3 (spec §4.4): unpin here too.
+        val pinned = PinnedImageStore.current(this)
+        if (pinned != null && status.dismissedImageCrc32 == pinned.crc32) PinnedImageStore.clear(this)
         main.post { updateNotification() }
     }
 

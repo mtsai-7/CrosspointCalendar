@@ -16,6 +16,27 @@
     <string name="btn_battery">Battery optimisation exemption</string>
     <string name="btn_bluetooth_settings">Bluetooth settings (pairing)</string>
     <string name="btn_hidden_save">Save hidden events</string>
+    <string name="btn_image">Show an image on the X3…</string>
+    <string name="btn_unpin">Show calendar</string>
+    <string name="unpinned">The X3 shows the calendar again on its next sync.</string>
+
+    <string name="image_title">Show on X3</string>
+    <string name="image_pick">Choose an image for the X3</string>
+    <string name="image_loading">Loading…</string>
+    <string name="image_converting">Converting…</string>
+    <string name="image_ready">As the X3 will show it (%1$d KB).</string>
+    <string name="image_mode_sharp">Black &amp; white (text, codes, screenshots)</string>
+    <string name="image_mode_photo">Grays (photos)</string>
+    <string name="image_rotate">Rotate 90°</string>
+    <string name="image_expiry_label">Go back to the calendar:</string>
+    <string name="image_expiry_never">When I choose Show calendar</string>
+    <string name="image_expiry_12h">After 12 hours</string>
+    <string name="image_expiry_24h">After 24 hours</string>
+    <string name="image_expiry_48h">After 48 hours</string>
+    <string name="image_show">Show on X3</string>
+    <string name="image_hint">The X3 picks it up on its next sync. To sync now, wake the X3 and put it back to sleep.</string>
+    <string name="image_pinned">Sent to the X3: it appears after the next sync.</string>
+    <string name="image_error">Could not use this image.</string>
 
     <string name="hidden_label">Hide all-day events whose title or location contains (one per line):</string>
     <string name="hidden_hint">e.g. Office</string>
@@ -32,4 +53,8 @@
     <string name="st_agenda">Agenda from %1$s: %2$d events, %3$d bytes</string>
     <string name="st_last_session">Last X3 session: %1$s</string>
     <string name="st_x3">X3: battery %1$s, %2$d wakes, firmware %3$s</string>
+    <string name="st_image_none">Pinned image: none</string>
+    <string name="st_image_waiting">Pinned image: waiting for the X3</string>
+    <string name="st_image_shown">Pinned image: shown on the X3</string>
+    <string name="st_image_expires">, until %1$s</string>
 </resources>

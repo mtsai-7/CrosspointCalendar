@@ -16,6 +16,7 @@
 
 #include "CalendarBle.h"
 #include "CalendarCache.h"
+#include "CalendarImage.h"
 #include "CrossPointSettings.h"
 #include "fontIds.h"
 
@@ -47,6 +48,8 @@ constexpr int EARLY_WAKE_TOLERANCE_S = std::min(60, REDRAW_INTERVAL_S / 4);
 // RTC slow memory: survives deep sleep, zeroed on power-on.
 RTC_DATA_ATTR uint32_t sleepRenderCount = 0;
 RTC_DATA_ATTR uint32_t timerWakeCount = 0;
+// imageCrc32 of the pinned image currently on the panel (0 = agenda or unknown).
+RTC_DATA_ATTR uint32_t shownImageCrc = 0;
 
 // This boot is a timer wake (plain RAM: reset on every boot).
 bool inTimerWake = false;
@@ -61,7 +64,9 @@ constexpr int ITEM_GAP = 20;     // whitespace between events
 constexpr int LINE_GAP = 4;      // between lines inside one event
 constexpr int COLUMN_GAP = 16;   // time column -> title column
 constexpr int TITLE_MAX_LINES = 2;
-constexpr int KEEP_PAST_MIN = 60;  // past events stay visible this long after they end
+// Past events stay visible this long after they end. 0: the :55 redraw shows
+// only what is running or still to come.
+constexpr int KEEP_PAST_MIN = 0;
 constexpr int SECTION_GAP = 4;           // last event's gap -> next-day separator
 constexpr int SECTION_HEADING_GAP = 12;  // around the next-day date heading
 constexpr int FOOTER_BOTTOM = 28;
@@ -379,8 +384,8 @@ void renderAgenda(const GfxRenderer& r, const struct tm& now) {
   const Columns cols = columnsFor(r, width);
   const int noteLine = r.getLineHeight(NOTE_FONT);
 
-  // Today: everything overlapping the day, minus events that ended over an
-  // hour ago, so each hourly redraw rolls the list forward.
+  // Today: everything overlapping the day, minus events that have ended
+  // (KEEP_PAST_MIN), so each redraw rolls the list forward.
   const int nowMin = dayIndex * calendar::MINUTES_PER_DAY + now.tm_hour * 60 + now.tm_min;
   const Section today =
       drawSection(r, agenda, cols, y, contentBottom, [&](const calendar::AgendaEvent& e) {
@@ -440,6 +445,24 @@ void render(GfxRenderer& renderer) {
   sleepRenderCount++;
   CalendarBle::restoreTimezone();  // phone's rule from the last sync, if any
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+
+  // A pinned image (spec §4.4) replaces the agenda. On timer wakes the panel
+  // still holds it, so an unchanged image needs no refresh at all.
+  if (CalendarImage::active()) {
+    const uint32_t crc = CalendarImage::storedCrc();
+    if (inTimerWake && crc == shownImageCrc) {
+      LOG_INF("CAL", "Pinned image %08lx already shown", static_cast<unsigned long>(crc));
+      return;
+    }
+    if (CalendarImage::render(renderer)) {
+      shownImageCrc = crc;
+      LOG_INF("CAL", "Rendered pinned image %08lx (#%lu)", static_cast<unsigned long>(crc),
+              static_cast<unsigned long>(sleepRenderCount));
+      return;
+    }
+  }
+  shownImageCrc = 0;
+
   renderer.clearScreen();
   struct tm now;
   if (halClock.localTime(now)) {

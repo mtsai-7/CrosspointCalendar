@@ -10,12 +10,13 @@ firmware unit tests must reproduce byte for byte.
 from __future__ import annotations
 
 import struct
+import zlib
 import unicodedata
 import zlib
 from dataclasses import dataclass, field
 
 PROTO_MAJOR = 1
-PROTO_MINOR = 0
+PROTO_MINOR = 1  # 1: pinned image (spec 4.4)
 PAYLOAD_VERSION = 1
 STATUS_VERSION = 1
 
@@ -27,7 +28,7 @@ HEADER_FIXED_LEN = 17
 MAX_TZ_LEN = 48
 MAX_TITLE = 64
 MAX_LOCATION = 48
-MAX_FW = 54
+MAX_FW = 46  # keeps STATUS (with the v1.1 image fields) <= 64 B
 
 MIN_CLAMP = -14 * 1440  # -20160
 MAX_EVENTS = 255
@@ -43,6 +44,12 @@ WHITESPACE = frozenset(
 
 HDR_PAYLOAD_VALID = 0x01
 HDR_NO_CALENDAR_PERMISSION = 0x02
+
+IMG_PINNED = 0x01  # HEADER imageFlags
+IMAGE_W, IMAGE_H = 528, 792  # X3 screen, portrait
+IMAGE_WINDOW = 512  # IMAGE_DATA window
+MAX_IMAGE_BMP = 110_000
+GRAY_LEVELS = (0, 85, 170, 255)  # the X3's native grays
 
 EV_ALL_DAY = 0x01
 EV_TENTATIVE = 0x02
@@ -91,14 +98,96 @@ def fold_letter(cp: int) -> str | None:
     return None
 
 
+# Combining marks used only as decoration (strike/underline/overline, "frame"
+# and swirl effects); dropped like pictographs.
+DECORATIVE_MARK_RANGES = [
+    (0x0305, 0x0305), (0x0332, 0x0338), (0x033F, 0x033F), (0x0488, 0x0489),
+    (0x1AB0, 0x1AFF), (0x20D0, 0x20F0), (0xFE20, 0xFE2F),
+]
+
+
+def is_decorative_mark(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in DECORATIVE_MARK_RANGES)
+
+
+# What the X3 can draw in titles and locations: the intersection of its
+# NotoSans 11 regular/bold and Ubuntu 12 glyph sets (firmware builtinFonts).
+DRAWABLE_RANGES = [
+    (0x0020, 0x007E), (0x00A0, 0x017F), (0x01A0, 0x01A1), (0x01AF, 0x01B0),
+    (0x01C4, 0x021F), (0x0300, 0x036F), (0x0400, 0x04FF), (0x1EA0, 0x1EF9),
+    (0x2000, 0x2064), (0x2066, 0x2071), (0x2074, 0x208E), (0x2090, 0x209C),
+    (0x20A0, 0x20C0), (0x2212, 0x2212), (0xFB00, 0xFB06), (0xFFFD, 0xFFFD),
+]
+
+
+def is_drawable(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in DRAWABLE_RANGES)
+
+
+def _pairs(table: str) -> dict[int, str]:
+    """"Xy Zw ..." -> {X: "y", Z: "w"}; a lone key maps to "" (deleted)."""
+    return {ord(item[0]): item[1:] for item in table.split()}
+
+
+# "Fancy text" generator lookalikes -> Latin, applied to a whole text only
+# when every character the X3 cannot draw is one of these keys (so genuine
+# Greek, Thai, CJK... text, which uses many other letters, is left alone).
+# Drawable keys (Cyrillic, a few Latin) are only rewritten in such texts.
+LOOKALIKES = _pairs(
+    # Canadian syllabics / runic ("ᗯᗝᖇᛕ")
+    "ᗩA ᗅA ᗷB ᑕC ᗪD ᗴE ᖴF ᘜG ᕼH ᒍJ ᛕK ᒪL ᗰM ᑎN ᗝO ᑭP ᑫQ ᖇR ᔕS ᑌU ᐯV ᗯW ᙭X ᘔZ "
+    # CJK ("山ㄖ尺ズ")
+    "卂A 乃B 匚C 乇E 千F Ꮆg 卄H 丨I ﾌJ ズK ㄥL 爪M 几N ㄖO 卩P Ɋq 尺R 丂S ㄒT ㄩU 山W 乂X ㄚY 乙Z "
+    # Thai and friends ("ฬ๏гк")
+    "คa ๒b ςc ๔d єe Ŧf ﻮg ђh เi ןj кk ɭl ๓m ภn ๏o קp ợq гr รs Շt ยu שv ฬw אx ץy չz "
+    # Greek
+    "αa βB γy δd εe ζz ηn ιi κk νv οo πn ρp σo τt υu χx ωw "
+    "ΑA ΒB ΕE ΖZ ΗH ΙI ΚK ΜM ΝN ΟO ΡP ΤT ΥY ΧX "
+    # Cyrillic
+    "аa вb дd еe ѕs зz иu йu кk лn мm нh оo пn рp сc тt уy хx шw щw ъb ьb яr ёe іi їi јj ћh ҝk ԝw "
+    "АA ВB ЕE ЗE КK МM НH ОO РP СC ТT УY ХX ШW ЩW ЯR ЬB ЪB "
+    # decorative brackets ("『w』『o』")
+    "『 』 「 」 【 】 〖 〗 〔 〕 《 》"
+)
+
+# Upside-down text ("ʞɔoꞁq ʞɹoʍ") is also written in reverse: decoded by
+# reversing the text, then mapping these keys (plus the ASCII swaps below).
+FLIPPED = _pairs(
+    "ɐa ɔc ǝe ɟf ƃg ɥh ᴉi ıi ɾj ʞk ꞁl ɯm ɹr ʇt ʌv ʍw ʎy "
+    "∀A ꓭB ƆC ꓷD ƎE ℲF ⅁G ꓘK ˥L ԀP ꓤR ⊥T ∩U ΛV ⅄Y ¿? ¡! ˙."
+)
+FLIPPED_ASCII = _pairs("bq qb dp pd nu un MW WM")
+
+
+def decode_lookalikes(text: str) -> str:
+    """Rewrites fancy-text lookalikes the X3 cannot draw back to Latin."""
+    undrawable = {ord(c) for c in text if not is_drawable(ord(c))}
+    if not undrawable:
+        return text
+    if undrawable <= FLIPPED.keys():
+        out = []
+        for c in reversed(text):
+            cp = ord(c)
+            out.append(FLIPPED.get(cp, FLIPPED_ASCII.get(cp, c)))
+        decoded = "".join(out)
+    elif undrawable <= LOOKALIKES.keys():
+        decoded = "".join(LOOKALIKES.get(ord(c), c) for c in text)
+    else:
+        return text
+    # Deleted brackets can leave empty words.
+    return " ".join(w for w in decoded.split(" ") if w)
+
+
 def sanitize_text(text: str | None) -> str:
-    """NFKC, drop pictographs, controls -> space, split on White_Space runs, rejoin with one space."""
+    """NFKC, fold styled letters, drop pictographs and decorative marks,
+    controls -> space, split on White_Space runs, rejoin with one space, then
+    decode fancy-text lookalikes the X3 cannot draw."""
     if not text:
         return ""
     words, cur = [], []
     for c in unicodedata.normalize("NFKC", text):
         c = fold_letter(ord(c)) or c
-        if is_pictograph(ord(c)):
+        if is_pictograph(ord(c)) or is_decorative_mark(ord(c)):
             continue
         if ord(c) < 0x20 or ord(c) == 0x7F:
             c = " "
@@ -110,7 +199,7 @@ def sanitize_text(text: str | None) -> str:
             cur.append(c)
     if cur:
         words.append("".join(cur))
-    return " ".join(words)
+    return decode_lookalikes(" ".join(words))
 
 
 def truncate_utf8(text: str, max_bytes: int) -> bytes:
@@ -236,7 +325,7 @@ def decode_payload(data: bytes) -> dict:
 
 
 def encode_header(payload: bytes | None, now_utc: int, utc_offset_min: int, tz_posix: str,
-                  no_calendar_permission: bool = False) -> bytes:
+                  no_calendar_permission: bool = False, image: bytes | None = None) -> bytes:
     tz = tz_posix.encode("ascii")
     if len(tz) > MAX_TZ_LEN:
         raise ProtocolError("tz too long")
@@ -249,8 +338,11 @@ def encode_header(payload: bytes | None, now_utc: int, utc_offset_min: int, tz_p
         chunks = (plen + CHUNK_SIZE - 1) // CHUNK_SIZE
     else:
         plen = crc = chunks = 0
-    return struct.pack("<BBBBHIIhB", PROTO_MAJOR, PROTO_MINOR, flags, chunks, plen, crc, now_utc,
+    head = struct.pack("<BBBBHIIhB", PROTO_MAJOR, PROTO_MINOR, flags, chunks, plen, crc, now_utc,
                        utc_offset_min, len(tz)) + tz
+    if image:
+        return head + struct.pack("<BII", IMG_PINNED, len(image), crc32(image))
+    return head + struct.pack("<BII", 0, 0, 0)
 
 
 def decode_header(data: bytes) -> dict:
@@ -264,9 +356,13 @@ def decode_header(data: bytes) -> dict:
     if plen > MAX_PAYLOAD or chunks != (plen + CHUNK_SIZE - 1) // CHUNK_SIZE:
         raise ProtocolError("chunkCount/payloadLen mismatch")
     tz = data[HEADER_FIXED_LEN : HEADER_FIXED_LEN + tzlen].decode("ascii")
-    # Trailing bytes beyond tz are allowed (future minor versions).
-    return {"minor": minor, "flags": flags, "chunk_count": chunks, "payload_len": plen, "crc": crc,
-            "now_utc": now, "utc_offset_min": off, "tz": tz}
+    out = {"minor": minor, "flags": flags, "chunk_count": chunks, "payload_len": plen, "crc": crc,
+           "now_utc": now, "utc_offset_min": off, "tz": tz, "image_flags": 0, "image_len": 0, "image_crc": 0}
+    # v1.1 image fields; absent in v1.0. Further trailing bytes are allowed.
+    at = HEADER_FIXED_LEN + tzlen
+    if len(data) >= at + 9:
+        out["image_flags"], out["image_len"], out["image_crc"] = struct.unpack_from("<BII", data, at)
+    return out
 
 
 def chunk(payload: bytes, index: int) -> bytes:
@@ -276,10 +372,11 @@ def chunk(payload: bytes, index: int) -> bytes:
 # --- Status ------------------------------------------------------------------
 
 
-def encode_status(battery: int, shown_crc: int, wake_count: int, flags: int, fw: str) -> bytes:
+def encode_status(battery: int, shown_crc: int, wake_count: int, flags: int, fw: str,
+                  shown_image_crc: int = 0, dismissed_image_crc: int = 0) -> bytes:
     fwb = fw.encode("ascii")[:MAX_FW]
     return struct.pack("<BBIHBB", STATUS_VERSION, battery, shown_crc, min(wake_count, 0xFFFF), flags,
-                       len(fwb)) + fwb
+                       len(fwb)) + fwb + struct.pack("<II", shown_image_crc, dismissed_image_crc)
 
 
 def decode_status(data: bytes) -> dict | None:
@@ -288,8 +385,71 @@ def decode_status(data: bytes) -> dict | None:
     ver, bat, crc, wakes, flags, fwlen = struct.unpack_from("<BBIHBB", data, 0)
     if 10 + fwlen > len(data):
         return None
-    return {"battery": bat, "shown_crc": crc, "wake_count": wakes, "flags": flags,
-            "fw": data[10 : 10 + fwlen].decode("ascii", "replace")}
+    out = {"battery": bat, "shown_crc": crc, "wake_count": wakes, "flags": flags,
+           "fw": data[10 : 10 + fwlen].decode("ascii", "replace"),
+           "shown_image_crc": 0, "dismissed_image_crc": 0}
+    if len(data) >= 18 + fwlen:  # v1.1
+        out["shown_image_crc"], out["dismissed_image_crc"] = struct.unpack_from("<II", data, 10 + fwlen)
+    return out
+
+
+# --- Pinned image (spec 4.4) -------------------------------------------------
+
+
+def encode_bmp(levels: list[list[int]], bpp: int) -> bytes:
+    """BMP for the X3: rows of gray levels (0..1 for 1 bpp, 0..3 for 2 bpp, 0 = black)."""
+    if bpp not in (1, 2):
+        raise ProtocolError("bpp must be 1 or 2")
+    height, width = len(levels), len(levels[0])
+    palette = b"".join(bytes((v, v, v, 0)) for v in ((0, 255) if bpp == 1 else GRAY_LEVELS))
+    row_bytes = (width * bpp + 31) // 32 * 4
+    rows = []
+    for row in reversed(levels):  # bottom-up
+        out = bytearray()
+        bits = nbits = 0
+        for v in row:
+            bits = (bits << bpp) | v
+            nbits += bpp
+            if nbits == 8:
+                out.append(bits)
+                bits = nbits = 0
+        if nbits:
+            out.append(bits << (8 - nbits))
+        rows.append(bytes(out).ljust(row_bytes, b"\x00"))
+    pixels = b"".join(rows)
+    off = 14 + 40 + len(palette)
+    file_header = struct.pack("<2sIHHI", b"BM", off + len(pixels), 0, 0, off)
+    info = struct.pack("<IiiHHIIiiII", 40, width, height, 1, bpp, 0, len(pixels), 2835, 2835,
+                       len(palette) // 4, 0)
+    return file_header + info + palette + pixels
+
+
+def check_image_bmp(bmp: bytes) -> int:
+    """Validates a spec 4.4 BMP; returns its bpp."""
+    if len(bmp) > MAX_IMAGE_BMP or len(bmp) < 62 or bmp[:2] != b"BM":
+        raise ProtocolError("not a BMP")
+    _, w, h, planes, bpp, comp = struct.unpack_from("<IiiHHI", bmp, 14)
+    if (w, h) != (IMAGE_W, IMAGE_H) or bpp not in (1, 2) or comp != 0 or planes != 1:
+        raise ProtocolError(f"unsupported image {w}x{h} {bpp} bpp")
+    return bpp
+
+
+def encode_image_stream(bmp: bytes) -> bytes:
+    check_image_bmp(bmp)
+    return zlib.compress(bmp, 9)
+
+
+def decode_image_stream(stream: bytes, image_len: int, image_crc: int) -> bytes:
+    if len(stream) != image_len or crc32(stream) != image_crc:
+        raise ProtocolError("image length/CRC mismatch")
+    bmp = zlib.decompress(stream)
+    check_image_bmp(bmp)
+    return bmp
+
+
+def image_window(stream: bytes, offset: int) -> bytes:
+    """IMAGE_DATA value after IMAGE_OFFSET = offset."""
+    return stream[offset : offset + IMAGE_WINDOW]
 
 
 # --- Test vectors ------------------------------------------------------------
@@ -320,6 +480,20 @@ SANITIZE_CASES = [
     ("\U0001f600", ""),
     ("ʙᴇᴘ ʀᴇᴠɪᴇᴡ \U0001f697", "bep review"),  # small capitals
     ("\U0001f150\U0001f151 \U0001f17e\U0001f17f", "AB OP"),  # negative circled / squared
+    # Fancy-text lookalikes the X3 cannot draw (decode_lookalikes)
+    ("ʞɔoꞁq ʞɹoʍ", "work block"),  # upside down, reversed
+    ("山ㄖ尺ズ 乃ㄥㄖ匚ズ", "WORK BLOCK"),
+    ("ฬ๏гк ๒ɭ๏ςк", "work block"),
+    ("ᗯᗝᖇᛕ ᗷᒪᗝᑕᛕ", "WORK BLOCK"),
+    ("Щöяк βłöск", "Wörk Błöck"),
+    ("『w』『o』『r』『k』 『b』", "work b"),
+    ("w҉o҉r҉k҉ ҉b҉", "work b"),  # decorative marks
+    ("s̶t̶r̶i̶k̶e̶", "strike"),
+    ("ᵂᵒʳᵏ ᴮˡᵒᶜᵏ", "Work Block"),  # NFKC
+    # Genuine text is left alone, drawable or not
+    ("Встреча с командой", "Встреча с командой"),
+    ("Καλημέρα ομάδα", "Καλημέρα ομάδα"),
+    ("東京 会議", "東京 会議"),
 ]
 
 
@@ -351,6 +525,16 @@ def vector_overflow() -> tuple[bytes, bytes]:
 
 def vector_no_permission() -> bytes:
     return encode_header(None, NOW, -420, TZ_LA, no_calendar_permission=True)
+
+
+def vector_image_bmp(bpp: int) -> bytes:
+    """Deterministic spec 4.4 test image: 8 px checker blocks over a level ramp."""
+    top = (1 << bpp) - 1
+    rows = []
+    for y in range(IMAGE_H):
+        band = min(top, y * (top + 1) // IMAGE_H)
+        rows.append([band if (x // 8 + y // 8) % 2 else top - band for x in range(IMAGE_W)])
+    return encode_bmp(rows, bpp)
 
 
 def _self_test() -> None:
@@ -399,6 +583,32 @@ def _self_test() -> None:
     s = encode_status(87, crc32(payload), 12, ST_CLOCK_ADJUSTED, "1.6.5-dev-calendar-93e98bb7")
     ds = decode_status(s)
     assert ds["battery"] == 87 and ds["fw"] == "1.6.5-dev-calendar-93e98bb7" and len(s) <= 64
+    assert len(encode_status(0, 0, 0, 0, "x" * 100)) == 64  # longest STATUS
+    v10 = s[:-8]  # a v1.0 STATUS (no image fields) still decodes
+    assert decode_status(v10)["dismissed_image_crc"] == 0 and decode_status(v10)["fw"] == ds["fw"]
+    si = decode_status(encode_status(50, 1, 2, 0, "fw", shown_image_crc=0xAABBCCDD, dismissed_image_crc=7))
+    assert si["shown_image_crc"] == 0xAABBCCDD and si["dismissed_image_crc"] == 7
+
+    # Pinned image: BMP layout, stream round trip, windows, header fields.
+    bmp1, bmp2 = vector_image_bmp(1), vector_image_bmp(2)
+    assert len(bmp1) == 53918 and len(bmp2) == 104614
+    assert check_image_bmp(bmp1) == 1 and check_image_bmp(bmp2) == 2
+    stream = encode_image_stream(bmp2)
+    assert decode_image_stream(stream, len(stream), crc32(stream)) == bmp2
+    windows = [image_window(stream, o) for o in range(0, len(stream), IMAGE_WINDOW)]
+    assert b"".join(windows) == stream and image_window(stream, len(stream)) == b""
+    hi = decode_header(encode_header(payload, NOW, -420, TZ_LA, image=stream))
+    assert hi["image_flags"] == IMG_PINNED and hi["image_len"] == len(stream)
+    assert hi["image_crc"] == crc32(stream)
+    assert decode_header(header)["image_flags"] == 0
+    assert len(encode_header(payload, NOW, -420, "x" * 48)) == 74  # longest HEADER
+    assert decode_header(header[:-9])["image_len"] == 0  # a v1.0 header still decodes
+    try:
+        decode_image_stream(stream, len(stream), crc32(stream) ^ 1)
+    except ProtocolError:
+        pass
+    else:
+        raise AssertionError("bad image CRC accepted")
 
     # Decoder must reject corruption.
     for bad in (payload[:-1], payload + b"\x00", b"\x02" + payload[1:]):
@@ -424,3 +634,5 @@ if __name__ == "__main__":
     print("overflow.payload.len = %d, crc32 = %08x" % (len(op), crc32(op)))
     print("noperm.header =", vector_no_permission().hex())
     print("status        =", status.hex())
+    print("image1.bmp crc32 = %08x (%d B)" % (crc32(vector_image_bmp(1)), len(vector_image_bmp(1))))
+    print("image2.bmp crc32 = %08x (%d B)" % (crc32(vector_image_bmp(2)), len(vector_image_bmp(2))))

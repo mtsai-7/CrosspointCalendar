@@ -26,6 +26,20 @@ class TextRulesTest {
             "😀" to "",
             "ʙᴇᴘ ʀᴇᴠɪᴇᴡ 🚗" to "bep review",
             "🅐🅑 🅾🅿" to "AB OP",
+            // Fancy-text lookalikes the X3 cannot draw
+            "ʞɔoꞁq ʞɹoʍ" to "work block",
+            "山ㄖ尺ズ 乃ㄥㄖ匚ズ" to "WORK BLOCK",
+            "ฬ๏гк ๒ɭ๏ςк" to "work block",
+            "ᗯᗝᖇᛕ ᗷᒪᗝᑕᛕ" to "WORK BLOCK",
+            "Щöяк βłöск" to "Wörk Błöck",
+            "『w』『o』『r』『k』 『b』" to "work b",
+            "w҉o҉r҉k҉ ҉b҉" to "work b",
+            "s̶t̶r̶i̶k̶e̶" to "strike",
+            "ᵂᵒʳᵏ ᴮˡᵒᶜᵏ" to "Work Block",
+            // Genuine text is left alone, drawable or not
+            "Встреча с командой" to "Встреча с командой",
+            "Καλημέρα ομάδα" to "Καλημέρα ομάδα",
+            "東京 会議" to "東京 会議",
         )
         for ((raw, want) in cases) assertEquals("sanitize(${raw.map { it.code }})", want, TextRules.sanitize(raw))
     }

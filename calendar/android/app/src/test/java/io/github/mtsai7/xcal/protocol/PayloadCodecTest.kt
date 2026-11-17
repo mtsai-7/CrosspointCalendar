@@ -40,7 +40,8 @@ class PayloadCodecTest {
         assertEquals(0xc9f9fd8eL, PayloadCodec.crc32(payload))
         val header = PayloadCodec.encodeHeader(payload, now, -420, tzLa, noCalendarPermission = false)
         assertEquals(
-            "0100010184008efdf9c960c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30",
+            "0101010184008efdf9c960c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30" +
+                "000000000000000000",
             header.toHex(),
         )
     }
@@ -63,7 +64,8 @@ class PayloadCodecTest {
         assertEquals(0x44648800L, PayloadCodec.crc32(payload))
         val header = PayloadCodec.encodeHeader(payload, now, -420, tzLa, noCalendarPermission = false)
         assertEquals(
-            "01000104f8070088644460c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30",
+            "01010104f8070088644460c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30" +
+                "000000000000000000",
             header.toHex(),
         )
         val joined = (0 until 4).map { PayloadCodec.chunk(payload, it) }.reduce { a, b -> a + b }
@@ -75,7 +77,8 @@ class PayloadCodecTest {
     fun noPermissionHeader() {
         val header = PayloadCodec.encodeHeader(null, now, -420, tzLa, noCalendarPermission = true)
         assertEquals(
-            "0100020000000000000060c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30",
+            "0101020000000000000060c4bb6a5cfe16535444384453542c4d332e322e302c4d31312e312e30" +
+                "000000000000000000",
             header.toHex(),
         )
     }
@@ -113,6 +116,32 @@ class PayloadCodecTest {
         assertEquals(12, status.wakeCount)
         assertEquals(Xcal.ST_CLOCK_ADJUSTED, status.flags)
         assertEquals("1.6.5-dev-calendar-93e98bb7", status.firmwareVersion)
+        assertEquals(0L, status.dismissedImageCrc32) // v1.0 STATUS: no image fields
+    }
+
+    @Test
+    fun statusV11ImageFields() {
+        val status = PayloadCodec.decodeStatus(
+            hex("01578efdf9c90c00011b312e362e352d6465762d63616c656e6461722d3933653938626237" + "ddccbbaa07000000"),
+        )!!
+        assertEquals("1.6.5-dev-calendar-93e98bb7", status.firmwareVersion)
+        assertEquals(0xaabbccddL, status.shownImageCrc32)
+        assertEquals(7L, status.dismissedImageCrc32)
+    }
+
+    @Test
+    fun headerWithPinnedImage() {
+        val image = ByteArray(1000) { it.toByte() }
+        val header = PayloadCodec.encodeHeader(null, now, -420, tzLa, noCalendarPermission = false, image = image)
+        val tail = header.copyOfRange(header.size - 9, header.size)
+        val crc = PayloadCodec.crc32(image)
+        val expected = byteArrayOf(
+            Xcal.IMG_PINNED.toByte(),
+            0xe8.toByte(), 0x03, 0, 0, // 1000
+            crc.toByte(), (crc shr 8).toByte(), (crc shr 16).toByte(), (crc shr 24).toByte(),
+        )
+        assertEquals(expected.toHex(), tail.toHex())
+        assertEquals(Xcal.HEADER_FIXED_LEN + tzLa.length + 9, header.size)
     }
 
     @Test

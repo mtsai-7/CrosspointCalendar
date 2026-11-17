@@ -22,8 +22,17 @@ the JVM unit tests reproduce the spec's test vectors.
   never hidden by it. The list is stored on the phone only.
 - **Text cleanup** (spec §4.2): styled Unicode letters (bold/script
   mathematical letters, fullwidth, circled, small capitals) become plain
-  letters, and emoji / pictographs the X3 fonts cannot draw are dropped.
+  letters; "fancy text" built from lookalike letters of other scripts
+  (upside-down, Canadian syllabics, Thai, CJK, Greek/Cyrillic styles) is
+  decoded back to Latin when the X3 couldn't draw it; decorative marks,
+  emoji and pictographs are dropped. Genuine non-Latin text is left alone.
 - Keeps the X3's clock and time zone in step with the phone.
+- **Pinned image** (spec §4.4): *Show on X3* in the share sheet, or *Show an
+  image on the X3…* in the app, converts a picture to the X3's 528 × 792
+  screen (black & white or four grays, with a preview) and pins it with an
+  optional expiry; *Show calendar* unpins it. Sharing from the personal
+  profile into a work-profile install depends on the work policy allowing
+  cross-profile sharing.
 
 ## Build
 

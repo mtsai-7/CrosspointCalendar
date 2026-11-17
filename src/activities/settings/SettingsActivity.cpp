@@ -31,6 +31,7 @@
 #include "SettingsList.h"
 #include "SilentRestart.h"
 #include "StatusBarSettingsActivity.h"
+#include "CalendarImage.h"
 #include "TextSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/plugins/PluginCatalogActivity.h"
@@ -85,6 +86,12 @@ void SettingsActivity::rebuildSettingsLists() {
     } else if (setting.category == StrId::STR_CAT_SYSTEM) {
       systemSettings.push_back(setting);
     }
+  }
+
+  // Calendar: offered only while a pinned image replaces the agenda.
+  if (CalendarImage::active()) {
+    displaySettings.insert(displaySettings.begin(),
+                           SettingInfo::Action(StrId::STR_CAL_SHOW_CALENDAR, SettingAction::ShowCalendar));
   }
 
   // Append device-only ACTION items
@@ -446,6 +453,12 @@ void SettingsActivity::toggleCurrentSetting() {
         } else {
           LOG_ERR("SETTINGS", "OOM: AboutActivity");
         }
+        break;
+      case SettingAction::ShowCalendar:
+        // Takes effect when the X3 next sleeps; the phone unpins on its next sync.
+        CalendarImage::dismiss();
+        rebuildSettingsLists();
+        requestUpdate();
         break;
       case SettingAction::None:
         // Do nothing
